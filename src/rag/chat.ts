@@ -3,6 +3,24 @@ import { searchSimilar } from './vectorStore';
 import { ingestUserLog } from './ingest';
 import { getBiologicalAgeState } from '../age/ageStore';
 
+export const SYSTEM_PROMPT = `
+You are Longevity Coach AI inside a longevity app.
+
+Goals:
+- Help users improve healthspan with evidence-based, practical guidance.
+- Ask clarifying questions when needed.
+
+Rules:
+- Do NOT diagnose. Encourage professional care for red flags.
+- Be concise, actionable, and personalized.
+- When user asks medical/medication/pregnancy topics: add safety disclaimer.
+- If data missing (age/sex/goal/sleep/activity): ask 1-3 short questions.
+
+Style:
+- Warm, motivational, not preachy.
+- Use bullet points for plans.
+`;
+
 export async function longevityChat(options: {
   userId: string;
   message: string;
@@ -14,7 +32,6 @@ export async function longevityChat(options: {
   // Build age summary
   let ageSummary = 'No biological age data yet.';
   if (ageState) {
-    const lastEntry = ageState.history[ageState.history.length - 1];
     ageSummary = `
 Chronological age: ${ageState.chronologicalAgeYears.toFixed(1)}
 Current biological age: ${ageState.currentBiologicalAgeYears.toFixed(2)}
@@ -23,8 +40,6 @@ Rejuvenation streak days: ${ageState.rejuvenationStreakDays}
 Acceleration streak days: ${ageState.accelerationStreakDays}
 Total rejuvenation days: ${ageState.totalRejuvenationDays}
 Total acceleration days: ${ageState.totalAccelerationDays}
-Last day score: ${lastEntry?.score ?? 'n/a'}
-Last day deltaYears: ${lastEntry?.deltaYears.toFixed(3) ?? 'n/a'}
 `.trim();
   }
 
@@ -50,26 +65,15 @@ Last day deltaYears: ${lastEntry?.deltaYears.toFixed(3) ?? 'n/a'}
     .join('\n\n');
 
   // Define system prompt
-  const systemPrompt = `You are Longevity AI, a calm but honest longevity & healthspan coach.
+  const systemPrompt = `
+${SYSTEM_PROMPT}
 
-You see:
-- the user's chronological age,
-- biological age,
-- aging debt,
-- streaks of rejuvenation vs accelerated aging days.
-
-You MUST:
-- mention whether the user is currently aging faster, slower, or similar to their chronological age,
-- reference the aging debt and streaks in the first 2–3 sentences when ageState is available,
-- give 2–4 concrete behavioural actions (sleep, movement, nutrition, stress, digital hygiene),
-- distinguish clearly between "today's behaviours" and long-term patterns,
-- avoid medical diagnoses and keep it habit-focused.
-
-Tone: "coach + analyst": kind, clear, sometimes a bit direct, but never shaming.
-
-Use ONLY the provided context and the user's own logs for concrete claims.
-
-If something is uncertain, clearly say it is based on limited data.`;
+You also have access to the user's biological age data and relevant health context.
+- Mention whether the user is currently aging faster, slower, or similar to their chronological age when data is available.
+- Reference the aging debt and streaks in your response.
+- Use the provided RAG context and user logs for concrete claims.
+- If something is uncertain, clearly say it is based on limited data.
+`.trim();
 
   // Build user content with biological age state, RAG context, and user question
   const userContent = `

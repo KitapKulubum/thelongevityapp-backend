@@ -11,19 +11,17 @@ export async function generateAgeMessage(
     return "We don't have enough data yet. Let's start with your first daily check-in.";
   }
 
-  const lastEntry = state.history.length > 0 ? state.history[state.history.length - 1] : null;
-
   const summary = `
 Chronological age: ${state.chronologicalAgeYears.toFixed(1)}
 Current biological age: ${state.currentBiologicalAgeYears.toFixed(2)}
 Aging debt: ${state.agingDebtYears.toFixed(2)} years
-Last day score: ${lastEntry?.score ?? 'n/a'}
-Last day deltaYears: ${lastEntry?.deltaYears.toFixed(3) ?? 'n/a'}
+Rejuvenation streak: ${state.rejuvenationStreakDays} days
+Acceleration streak: ${state.accelerationStreakDays} days
 `;
 
   const systemPrompt = `You are Longevity AI, a calm but honest longevity & healthspan coach.
 
-You see the user's biological age state and daily score.
+You see the user's biological age state and trends.
 
 You explain whether they are aging faster or slower than their chronological age in a very simple way.
 

@@ -20,9 +20,8 @@ export interface DailyMetrics {
 
 export interface DailyAgeEntry {
   date: string;
-  score: number; // -10 to +10
   deltaYears: number; // daily biological age change in years
-  reasons: string[]; // brief explanations for the score
+  reasons: string[]; // brief explanations for the delta
 }
 
 export interface BiologicalAgeState {
@@ -46,102 +45,90 @@ export interface BiologicalAgeState {
  */
 export function calculateDailyScore(metrics: DailyMetrics): {
   score: number;
+  deltaYears: number;
   reasons: string[];
 } {
-  let score = 0;
+  // Start from neutral 5, nudge up/down based on simple heuristics.
+  let score = 5;
   const reasons: string[] = [];
 
   // Sleep hours
-  if (metrics.sleepHours >= 7 && metrics.sleepHours <= 9) {
-    score += 3;
-    reasons.push('Optimal sleep duration');
-  } else if (
-    (metrics.sleepHours >= 6 && metrics.sleepHours < 7) ||
-    (metrics.sleepHours > 9 && metrics.sleepHours <= 10)
-  ) {
-    score += 1;
-  } else if (
-    (metrics.sleepHours >= 5 && metrics.sleepHours < 6) ||
-    metrics.sleepHours > 10
-  ) {
-    score -= 1;
-  } else if (metrics.sleepHours < 5) {
-    score -= 3;
-    reasons.push('Severe sleep restriction');
-  }
-
-  // Movement (steps + vigorousMinutes)
-  if (metrics.steps >= 8000 || metrics.vigorousMinutes >= 30) {
-    score += 3;
-  } else if (
-    (metrics.steps >= 5000 && metrics.steps < 8000) ||
-    (metrics.vigorousMinutes >= 10 && metrics.vigorousMinutes < 30)
-  ) {
-    score += 1;
-  } else if (metrics.steps >= 3000 && metrics.steps < 5000) {
-    // 0 points, no change
-  } else if (metrics.steps < 3000 && metrics.vigorousMinutes < 10) {
-    score -= 2;
-  }
-
-  // Processed food (0–10, 10 = worst)
-  if (metrics.processedFoodScore >= 0 && metrics.processedFoodScore <= 2) {
+  if (metrics.sleepHours >= 7 && metrics.sleepHours <= 8) {
     score += 2;
-  } else if (metrics.processedFoodScore >= 3 && metrics.processedFoodScore <= 5) {
+    reasons.push('Sleep in sweet spot (7–8h)');
+  } else if (metrics.sleepHours >= 6 && metrics.sleepHours < 7) {
     score += 1;
-  } else if (metrics.processedFoodScore >= 6 && metrics.processedFoodScore <= 8) {
+    reasons.push('Sleep slightly short (6–7h)');
+  } else if (metrics.sleepHours < 6) {
+    score -= 2;
+    reasons.push('Sleep very short (<6h)');
+  } else if (metrics.sleepHours > 9) {
     score -= 1;
-  } else if (metrics.processedFoodScore >= 9 && metrics.processedFoodScore <= 10) {
-    score -= 2;
+    reasons.push('Sleep long (>9h)');
   }
 
-  // Alcohol
-  if (metrics.alcoholUnits === 0) {
-    score += 1;
-  } else if (metrics.alcoholUnits >= 1 && metrics.alcoholUnits <= 2) {
-    // 0 points, no change
-  } else if (metrics.alcoholUnits >= 3) {
-    score -= 2;
-  }
-
-  // Stress level (1–10, 10 = very stressed)
-  if (metrics.stressLevel >= 1 && metrics.stressLevel <= 3) {
+  // Steps
+  if (metrics.steps >= 8000) {
     score += 2;
-  } else if (metrics.stressLevel >= 4 && metrics.stressLevel <= 6) {
-    // 0 points, no change
-  } else if (metrics.stressLevel >= 7 && metrics.stressLevel <= 8) {
+    reasons.push('Steps 8k+');
+  } else if (metrics.steps >= 5000 && metrics.steps < 8000) {
+    score += 1;
+    reasons.push('Steps 5k–7.9k');
+  } else if (metrics.steps < 5000) {
     score -= 1;
-  } else if (metrics.stressLevel >= 9 && metrics.stressLevel <= 10) {
+    reasons.push('Steps under 5k');
+  }
+
+  // Vigorous minutes
+  if (metrics.vigorousMinutes >= 20) {
+    score += 2;
+    reasons.push('Vigorous 20m+');
+  } else if (metrics.vigorousMinutes >= 10 && metrics.vigorousMinutes < 20) {
+    score += 1;
+    reasons.push('Vigorous 10–19m');
+  } else if (metrics.vigorousMinutes <= 0) {
+    score -= 1;
+    reasons.push('No vigorous activity');
+  }
+
+  // Stress
+  if (metrics.stressLevel <= 3) {
+    score += 2;
+    reasons.push('Low stress (<=3)');
+  } else if (metrics.stressLevel >= 7) {
     score -= 2;
+    reasons.push('High stress (>=7)');
   }
 
   // Late caffeine
   if (metrics.lateCaffeine) {
     score -= 1;
+    reasons.push('Late caffeine');
   }
 
   // Late screen
   if (metrics.screenLate) {
     score -= 1;
+    reasons.push('Late screen use');
   }
 
-  // Bedtime hour
-  if (metrics.bedtimeHour >= 21 && metrics.bedtimeHour < 23) {
-    score += 2;
-  } else if (metrics.bedtimeHour >= 23 && metrics.bedtimeHour < 24) {
-    // 0 points, no change
-  } else if (metrics.bedtimeHour >= 0 && metrics.bedtimeHour <= 1) {
-    score -= 1;
-  } else if (metrics.bedtimeHour > 1 && metrics.bedtimeHour < 21) {
-    // Assuming this means after 1am but before 9pm (next day)
-    score -= 2;
-  }
-
-  // Clamp score between -10 and +10
+  // Clamp score between 0 and 10
   if (score > 10) score = 10;
-  if (score < -10) score = -10;
+  if (score < 0) score = 0;
 
-  return { score, reasons };
+  // Map score to biological age delta
+  let deltaYears = 0;
+  if (score >= 8) {
+    deltaYears = -0.12; // Increased for demo visibility
+  } else if (score >= 6) {
+    deltaYears = -0.05;
+  } else if (score >= 4) {
+    deltaYears = 0.01;
+  } else {
+    deltaYears = 0.15;
+  }
+
+  return { score, deltaYears, reasons };
 }
 
 /**
@@ -156,49 +143,36 @@ export function applyDailyAgeUpdate(
   prev: BiologicalAgeState,
   metrics: DailyMetrics
 ): { next: BiologicalAgeState; entry: DailyAgeEntry } {
-  const { score, reasons } = calculateDailyScore(metrics);
-
-  // Convert score to biological age delta in years
-  // Positive score (good habits) reduces biological age (rejuvenation)
-  // Negative score (bad habits) increases biological age (accelerated aging)
-  // -10 to +10 score maps to +0.02 to -0.02 years per day
-  const deltaYears = -score * 0.002;
+  const { score, deltaYears, reasons } = calculateDailyScore(metrics);
 
   // Compute new current biological age
   const currentBiologicalAgeYears =
     prev.currentBiologicalAgeYears + deltaYears;
 
-  // Compute new aging debt (only positive difference from chronological age)
-  const agingDebtYears = Math.max(
-    0,
-    currentBiologicalAgeYears - prev.chronologicalAgeYears
-  );
+  // Compute new aging debt (difference from baseline biological age)
+  const agingDebtYears = currentBiologicalAgeYears - prev.baselineBiologicalAgeYears;
 
-  // Update streaks and counters based on deltaYears
+  // Update streaks based on threshold
+  const threshold = 0.001;
   let rejuvenationStreakDays = prev.rejuvenationStreakDays;
   let accelerationStreakDays = prev.accelerationStreakDays;
   let totalRejuvenationDays = prev.totalRejuvenationDays;
   let totalAccelerationDays = prev.totalAccelerationDays;
 
-  if (deltaYears < 0) {
-    // Rejuvenation day (biological age decreased)
-    rejuvenationStreakDays = prev.rejuvenationStreakDays + 1;
+  if (deltaYears <= -threshold) {
+    rejuvenationStreakDays += 1;
     accelerationStreakDays = 0;
-    totalRejuvenationDays = prev.totalRejuvenationDays + 1;
-    totalAccelerationDays = prev.totalAccelerationDays;
-  } else if (deltaYears > 0) {
-    // Accelerated aging day (biological age increased)
-    accelerationStreakDays = prev.accelerationStreakDays + 1;
+    totalRejuvenationDays += 1;
+  } else if (deltaYears >= threshold) {
+    accelerationStreakDays += 1;
     rejuvenationStreakDays = 0;
-    totalAccelerationDays = prev.totalAccelerationDays + 1;
-    totalRejuvenationDays = prev.totalRejuvenationDays;
+    totalAccelerationDays += 1;
   }
   // If deltaYears === 0, keep both streaks and totals as they were
 
   // Build daily entry
   const entry: DailyAgeEntry = {
     date: metrics.date,
-    score,
     deltaYears,
     reasons,
   };

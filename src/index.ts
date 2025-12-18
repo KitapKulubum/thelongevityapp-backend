@@ -6,14 +6,45 @@ import {
   applyDailyMetricsForUser,
   getBiologicalAgeState,
   getOrCreateBiologicalAgeState,
+  getUserChronologicalAge,
+  getUserProfile,
+  getUserState,
+  getDailyEntries,
 } from './age/ageStore';
 import { DailyMetrics } from './age/ageModel';
 import { generateAgeMessage } from './age/ageMessages';
+import {
+  setOnboardingScore,
+  getScoreState,
+  updateScoreFromDaily,
+} from './score/scoreStore';
+import { OnboardingAnswers } from './score/scoreModel';
 
 const app: Express = express();
 
 app.use(cors());
 app.use(express.json());
+
+function normalizeDailyMetrics(body: any): DailyMetrics {
+  const today = new Date().toISOString().slice(0, 10);
+  const source = body.metrics ?? body;
+
+  const toNumber = (value: any, fallback = 0) =>
+    Number.isFinite(Number(value)) ? Number(value) : fallback;
+
+  return {
+    date: source.date ?? today,
+    sleepHours: toNumber(source.sleepHours),
+    steps: toNumber(source.steps),
+    vigorousMinutes: toNumber(source.vigorousMinutes),
+    processedFoodScore: toNumber(source.processedFoodScore),
+    alcoholUnits: toNumber(source.alcoholUnits),
+    stressLevel: toNumber(source.stressLevel),
+    lateCaffeine: Boolean(source.lateCaffeine),
+    screenLate: Boolean(source.screenLate ?? source.lateScreenUsage),
+    bedtimeHour: toNumber(source.bedtimeHour, 23),
+  };
+}
 
 app.post('/api/chat', async (req, res) => {
   try {
@@ -44,26 +75,69 @@ app.post('/api/ingest-log', async (req, res) => {
 });
 
 app.post('/api/age/daily-update', async (req, res) => {
+  console.log('[daily-update] body:', JSON.stringify(req.body, null, 2));
   try {
-    const { userId, chronologicalAgeYears, metrics } = req.body;
+    const { userId } = req.body;
 
-    if (!userId || typeof chronologicalAgeYears !== 'number' || !metrics) {
-      return res
-        .status(400)
-        .json({ error: 'userId, chronologicalAgeYears and metrics are required' });
+    if (!userId) {
+      return res.status(400).json({ error: 'userId is required' });
     }
 
-    const typedMetrics = metrics as DailyMetrics;
+    const storedAge = getUserChronologicalAge(userId);
+    const chronologicalAgeYears =
+      req.body.chronologicalAgeYears ?? storedAge;
+
+    if (
+      chronologicalAgeYears === undefined ||
+      chronologicalAgeYears === null ||
+      Number.isNaN(Number(chronologicalAgeYears))
+    ) {
+      return res
+        .status(400)
+        .json({ error: 'chronologicalAgeYears is required for this user' });
+    }
+
+    const typedMetrics = normalizeDailyMetrics(req.body);
 
     const { next, entry } = applyDailyMetricsForUser(
       userId,
-      chronologicalAgeYears,
+      Number(chronologicalAgeYears),
       typedMetrics
     );
 
+    // Get profile and state to match AgeStateResponse format
+    const profile = getUserProfile(userId);
+    const state = getUserState(userId);
+
+    if (!profile || !state) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    console.log('[daily-update] result:', {
+      userId,
+      deltaYears: entry.deltaYears,
+      reasons: entry.reasons,
+      biologicalAge: next.currentBiologicalAgeYears,
+      agingDebt: next.agingDebtYears,
+    });
+
     return res.json({
-      state: next,
-      today: entry,
+      profile: {
+        chronologicalAgeYears: profile.chronologicalAgeYears,
+        baselineBiologicalAgeYears: profile.baselineBiologicalAgeYears,
+      },
+      state: {
+        currentBiologicalAgeYears: state.currentBiologicalAgeYears,
+        agingDebtYears: state.agingDebtYears,
+        rejuvenationStreakDays: state.rejuvenationStreakDays,
+        accelerationStreakDays: state.accelerationStreakDays,
+        totalRejuvenationDays: state.totalRejuvenationDays,
+        totalAccelerationDays: state.totalAccelerationDays,
+      },
+      today: {
+        deltaYears: entry.deltaYears,
+        reasons: entry.reasons,
+      },
     });
   } catch (error: any) {
     console.error(error);
@@ -71,23 +145,35 @@ app.post('/api/age/daily-update', async (req, res) => {
   }
 });
 
-app.get('/api/age/state', (req, res) => {
+app.get('/api/age/state/:userId', async (req, res) => {
   try {
-    const userId = req.query.userId as string | undefined;
-    const chronologicalAgeYears = req.query.chronologicalAgeYears
-      ? Number(req.query.chronologicalAgeYears)
-      : undefined;
+    const { userId } = req.params;
 
     if (!userId) {
       return res.status(400).json({ error: 'userId is required' });
     }
 
-    if (chronologicalAgeYears === undefined || isNaN(chronologicalAgeYears)) {
-      return res.status(400).json({ error: 'chronologicalAgeYears is required' });
+    const profile = getUserProfile(userId);
+    const state = getUserState(userId);
+
+    if (!profile || !state) {
+      return res.status(404).json({ error: 'User not found' });
     }
 
-    const state = getOrCreateBiologicalAgeState(userId, chronologicalAgeYears);
-    return res.json({ state });
+    return res.json({
+      profile: {
+        chronologicalAgeYears: profile.chronologicalAgeYears,
+        baselineBiologicalAgeYears: profile.baselineBiologicalAgeYears,
+      },
+      state: {
+        currentBiologicalAgeYears: state.currentBiologicalAgeYears,
+        agingDebtYears: state.agingDebtYears,
+        rejuvenationStreakDays: state.rejuvenationStreakDays,
+        accelerationStreakDays: state.accelerationStreakDays,
+        totalRejuvenationDays: state.totalRejuvenationDays,
+        totalAccelerationDays: state.totalAccelerationDays,
+      },
+    });
   } catch (error: any) {
     console.error(error);
     return res.status(500).json({ error: 'Internal server error' });
@@ -118,6 +204,153 @@ app.post('/api/age/evening-briefing', async (req, res) => {
 
     const message = await generateAgeMessage(userId, 'evening');
     return res.json({ message });
+  } catch (error: any) {
+    console.error(error);
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Score endpoints
+app.post('/api/score/onboarding', async (req, res) => {
+  try {
+    const { userId, answers } = req.body;
+
+    if (!userId || !answers) {
+      return res
+        .status(400)
+        .json({ error: 'userId and answers are required' });
+    }
+
+    const state = await setOnboardingScore(
+      userId,
+      answers as OnboardingAnswers
+    );
+
+    return res.json({
+      baselineScore: state.baselineScore,
+      currentScore: state.currentScore,
+      breakdown: state.breakdown,
+      insights: state.insights,
+    });
+  } catch (error: any) {
+    console.error(error);
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+app.post('/api/score/daily', async (req, res) => {
+  try {
+    const { userId } = req.body;
+
+    if (!userId) {
+      return res.status(400).json({ error: 'userId is required' });
+    }
+
+    const typedMetrics = normalizeDailyMetrics(req.body);
+    const updatedState = await updateScoreFromDaily(userId, typedMetrics);
+
+    if (!updatedState) {
+      return res
+        .status(404)
+        .json({ error: 'User score not found. Complete onboarding first.' });
+    }
+
+    return res.json({
+      baselineScore: updatedState.baselineScore,
+      currentScore: updatedState.currentScore,
+      breakdown: updatedState.breakdown,
+      insights: updatedState.insights,
+    });
+  } catch (error: any) {
+    console.error(error);
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+app.get('/api/score/state/:userId', async (req, res) => {
+  try {
+    const { userId } = req.params;
+
+    if (!userId) {
+      return res.status(400).json({ error: 'userId is required' });
+    }
+
+    const state = getScoreState(userId);
+
+    if (!state) {
+      return res.status(404).json({ error: 'User score not found. Complete onboarding first.' });
+    }
+
+    return res.json({
+      baselineScore: state.baselineScore,
+      currentScore: state.currentScore,
+      breakdown: state.breakdown,
+      insights: state.insights,
+    });
+  } catch (error: any) {
+    console.error(error);
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+app.get('/api/age/trend/:userId', async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const range = (req.query.range as string) || 'weekly';
+
+    if (!userId) {
+      return res.status(400).json({ error: 'userId is required' });
+    }
+
+    // Determine limit based on range
+    let limit: number;
+    switch (range) {
+      case 'weekly':
+        limit = 7;
+        break;
+      case 'monthly':
+        limit = 30;
+        break;
+      case 'yearly':
+        limit = 365;
+        break;
+      default:
+        return res.status(400).json({ error: 'Invalid range. Use weekly, monthly, or yearly' });
+    }
+
+    // Get daily entries
+    const dailyEntries = getDailyEntries(userId, limit);
+
+    // Sort by date ascending for trend points
+    const sortedEntries = dailyEntries.sort((a, b) => a.date.localeCompare(b.date));
+
+    // Build trend points
+    const points = sortedEntries.map((entry) => ({
+      date: entry.date,
+      biologicalAgeYears: entry.biologicalAgeAfter,
+      agingDebtYears: entry.agingDebtAfter,
+    }));
+
+    // Calculate summary
+    const state = getUserState(userId);
+    const profile = getUserProfile(userId);
+
+    if (!state || !profile) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    return res.json({
+      range,
+      points,
+      summary: {
+        currentBiologicalAgeYears: state.currentBiologicalAgeYears,
+        agingDebtYears: state.agingDebtYears,
+        rejuvenationStreakDays: state.rejuvenationStreakDays,
+        accelerationStreakDays: state.accelerationStreakDays,
+        totalRejuvenationDays: state.totalRejuvenationDays,
+        totalAccelerationDays: state.totalAccelerationDays,
+      },
+    });
   } catch (error: any) {
     console.error(error);
     return res.status(500).json({ error: 'Internal server error' });
