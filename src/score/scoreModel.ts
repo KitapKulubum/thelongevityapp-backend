@@ -190,52 +190,47 @@ export function calculateOnboardingScore(
 
 /**
  * Updates current score based on daily metrics.
- * For now, this is a simplified version that adjusts based on daily check-in.
- * In a full implementation, this would track trends over time.
  */
 export function updateDailyScore(
   prevState: ScoreState,
   dailyMetrics: {
-    sleepHours?: number;
-    steps?: number;
-    vigorousMinutes?: number;
+    sleepQuality?: number;
+    physicalActivity?: number;
+    nutritionQuality?: number;
     stressLevel?: number;
-    processedFoodScore?: number;
-    alcoholUnits?: number;
+    sugarAlcoholExposure?: number;
   }
 ): ScoreState {
-  // Simple adjustment: if daily metrics are better than baseline assumptions,
-  // slightly increase score; if worse, slightly decrease.
-  // This is a placeholder - a full implementation would track rolling averages.
-
   let adjustment = 0;
-  const newBreakdown = { ...prevState.breakdown };
 
-  // Sleep adjustment (if provided)
-  if (dailyMetrics.sleepHours !== undefined) {
-    if (dailyMetrics.sleepHours >= 7 && dailyMetrics.sleepHours <= 9) {
-      adjustment += 0.5;
-    } else if (dailyMetrics.sleepHours < 6 || dailyMetrics.sleepHours > 10) {
-      adjustment -= 0.5;
-    }
+  // Sleep adjustment
+  if (dailyMetrics.sleepQuality !== undefined) {
+    if (dailyMetrics.sleepQuality >= 3) adjustment += 0.5;
+    else if (dailyMetrics.sleepQuality <= 1) adjustment -= 0.5;
   }
 
-  // Steps adjustment
-  if (dailyMetrics.steps !== undefined) {
-    if (dailyMetrics.steps >= 8000) {
-      adjustment += 0.3;
-    } else if (dailyMetrics.steps < 5000) {
-      adjustment -= 0.3;
-    }
+  // Activity adjustment
+  if (dailyMetrics.physicalActivity !== undefined) {
+    if (dailyMetrics.physicalActivity >= 3) adjustment += 0.5;
+    else if (dailyMetrics.physicalActivity <= 1) adjustment -= 0.5;
+  }
+
+  // Nutrition adjustment
+  if (dailyMetrics.nutritionQuality !== undefined) {
+    if (dailyMetrics.nutritionQuality >= 3) adjustment += 0.5;
+    else if (dailyMetrics.nutritionQuality <= 1) adjustment -= 0.5;
   }
 
   // Stress adjustment
   if (dailyMetrics.stressLevel !== undefined) {
-    if (dailyMetrics.stressLevel <= 3) {
-      adjustment += 0.2;
-    } else if (dailyMetrics.stressLevel >= 7) {
-      adjustment -= 0.2;
-    }
+    if (dailyMetrics.stressLevel >= 3) adjustment += 0.3; // 3=Low, 4=Calm
+    else if (dailyMetrics.stressLevel <= 1) adjustment -= 0.3; // 0=Extreme, 1=High
+  }
+
+  // Sugar/Alcohol adjustment
+  if (dailyMetrics.sugarAlcoholExposure !== undefined) {
+    if (dailyMetrics.sugarAlcoholExposure >= 2) adjustment += 0.2;
+    else if (dailyMetrics.sugarAlcoholExposure === 0) adjustment -= 0.4;
   }
 
   // Clamp current score between 0-100

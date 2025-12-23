@@ -55,12 +55,11 @@ export function updateScoreFromDaily(
   }
 
   const updated = updateDailyScore(prevState, {
-    sleepHours: dailyMetrics.sleepHours,
-    steps: dailyMetrics.steps,
-    vigorousMinutes: dailyMetrics.vigorousMinutes,
+    sleepQuality: dailyMetrics.sleepQuality,
+    physicalActivity: dailyMetrics.physicalActivity,
+    nutritionQuality: dailyMetrics.nutritionQuality,
     stressLevel: dailyMetrics.stressLevel,
-    processedFoodScore: dailyMetrics.processedFoodScore,
-    alcoholUnits: dailyMetrics.alcoholUnits,
+    sugarAlcoholExposure: dailyMetrics.sugarAlcoholExposure,
   });
 
   scoreStore.set(userId, updated);

@@ -7,15 +7,16 @@
 
 export interface DailyMetrics {
   date: string; // ISO date, e.g. "2025-12-04"
-  sleepHours: number; // total sleep hours
-  steps: number; // step count
-  vigorousMinutes: number; // minutes of moderate/vigorous activity
-  processedFoodScore: number; // 0 (perfect) – 10 (very processed)
-  alcoholUnits: number; // drinks per day
-  stressLevel: number; // 1 (very calm) – 10 (very stressed)
-  lateCaffeine: boolean; // had caffeine after 15:00
-  screenLate: boolean; // heavy screen use in last 2 hours before bed
-  bedtimeHour: number; // 24h format, e.g. 22.5 for 22:30
+  sleepQuality: number; // 0 (worst) – 4 (best)
+  energyLevel: number; // 0–4
+  physicalActivity: number; // 0–4
+  nutritionQuality: number; // 0–4
+  sugarAlcoholExposure: number; // 0 (high) – 3 (none)
+  stressLevel: number; // 0 (extremely stressful) – 4 (calm)
+  mentalEmotionalLoad: number; // 0 (overloaded) – 4 (mentally clear)
+  circadianRhythm: number; // 0 (no daylight/late screen) – 4 (excellent)
+  bodySignals: string[]; // ["Bloating", "Headache", "Muscle soreness", "None", "Great"]
+  rejuvenationBehaviors: string[]; // ["Meditation", "Sauna", "Stretching", "Social", "None"]
 }
 
 export interface DailyAgeEntry {
@@ -28,7 +29,7 @@ export interface BiologicalAgeState {
   chronologicalAgeYears: number; // actual age
   baselineBiologicalAgeYears: number; // starting biological age (often = chronological)
   currentBiologicalAgeYears: number; // updated daily
-  agingDebtYears: number; // max(0, currentBiological - chronological)
+  agingDebtYears: number; // currentBiological - chronological
   history: DailyAgeEntry[]; // recent days
   rejuvenationStreakDays: number; // consecutive days with negative deltaYears
   accelerationStreakDays: number; // consecutive days with positive deltaYears
@@ -37,122 +38,104 @@ export interface BiologicalAgeState {
 }
 
 /**
- * Calculates a daily health score based on various lifestyle metrics.
- * Score ranges from -10 (worst) to +10 (best).
+ * Calculates a daily biological age delta based on 10 health signals.
+ * Max daily change: +0.3 years (aging) to -0.2 years (rejuvenation).
  *
  * @param metrics - Daily health metrics
- * @returns Score and human-readable reasons for the score
+ * @returns Score (0-100 placeholder), deltaYears, and human-readable reasons
  */
 export function calculateDailyScore(metrics: DailyMetrics): {
   score: number;
   deltaYears: number;
   reasons: string[];
 } {
-  // Start from neutral 5, nudge up/down based on simple heuristics.
-  let score = 5;
+  let deltaYears = 0;
   const reasons: string[] = [];
 
-  // Sleep hours
-  if (metrics.sleepHours >= 7 && metrics.sleepHours <= 8) {
-    score += 2;
-    reasons.push('Sleep in sweet spot (7–8h)');
-  } else if (metrics.sleepHours >= 6 && metrics.sleepHours < 7) {
-    score += 1;
-    reasons.push('Sleep slightly short (6–7h)');
-  } else if (metrics.sleepHours < 6) {
-    score -= 2;
-    reasons.push('Sleep very short (<6h)');
-  } else if (metrics.sleepHours > 9) {
-    score -= 1;
-    reasons.push('Sleep long (>9h)');
+  // Helper to map 5-option questions (0-4)
+  const mapFiveOption = (val: number, label: string) => {
+    switch (val) {
+      case 0: deltaYears += 0.03; reasons.push(`${label}: Very poor`); break;
+      case 1: deltaYears += 0.02; reasons.push(`${label}: Poor`); break;
+      case 2: deltaYears += 0.01; reasons.push(`${label}: Moderate`); break;
+      case 3: deltaYears -= 0.01; reasons.push(`${label}: Good`); break;
+      case 4: deltaYears -= 0.02; reasons.push(`${label}: Excellent`); break;
+    }
+  };
+
+  mapFiveOption(metrics.sleepQuality, 'Sleep');
+  mapFiveOption(metrics.energyLevel, 'Energy');
+  mapFiveOption(metrics.physicalActivity, 'Activity');
+  mapFiveOption(metrics.nutritionQuality, 'Nutrition');
+  mapFiveOption(metrics.stressLevel, 'Stress');
+  mapFiveOption(metrics.mentalEmotionalLoad, 'Mental load');
+  mapFiveOption(metrics.circadianRhythm, 'Circadian');
+
+  // Sugar & Alcohol (0-3)
+  switch (metrics.sugarAlcoholExposure) {
+    case 0: deltaYears += 0.03; reasons.push('Sugar/Alcohol: High'); break;
+    case 1: deltaYears += 0.01; reasons.push('Sugar/Alcohol: Moderate'); break;
+    case 2: deltaYears -= 0.01; reasons.push('Sugar/Alcohol: Low'); break;
+    case 3: deltaYears -= 0.02; reasons.push('Sugar/Alcohol: None'); break;
   }
 
-  // Steps
-  if (metrics.steps >= 8000) {
-    score += 2;
-    reasons.push('Steps 8k+');
-  } else if (metrics.steps >= 5000 && metrics.steps < 8000) {
-    score += 1;
-    reasons.push('Steps 5k–7.9k');
-  } else if (metrics.steps < 5000) {
-    score -= 1;
-    reasons.push('Steps under 5k');
-  }
-
-  // Vigorous minutes
-  if (metrics.vigorousMinutes >= 20) {
-    score += 2;
-    reasons.push('Vigorous 20m+');
-  } else if (metrics.vigorousMinutes >= 10 && metrics.vigorousMinutes < 20) {
-    score += 1;
-    reasons.push('Vigorous 10–19m');
-  } else if (metrics.vigorousMinutes <= 0) {
-    score -= 1;
-    reasons.push('No vigorous activity');
-  }
-
-  // Stress
-  if (metrics.stressLevel <= 3) {
-    score += 2;
-    reasons.push('Low stress (<=3)');
-  } else if (metrics.stressLevel >= 7) {
-    score -= 2;
-    reasons.push('High stress (>=7)');
-  }
-
-  // Late caffeine
-  if (metrics.lateCaffeine) {
-    score -= 1;
-    reasons.push('Late caffeine');
-  }
-
-  // Late screen
-  if (metrics.screenLate) {
-    score -= 1;
-    reasons.push('Late screen use');
-  }
-
-  // Clamp score between 0 and 10
-  if (score > 10) score = 10;
-  if (score < 0) score = 0;
-
-  // Map score to biological age delta
-  let deltaYears = 0;
-  if (score >= 8) {
-    deltaYears = -0.12; // Increased for demo visibility
-  } else if (score >= 6) {
-    deltaYears = -0.05;
-  } else if (score >= 4) {
-    deltaYears = 0.01;
+  // Body Signals (Multi-select)
+  if (metrics.bodySignals.includes('Great')) {
+    deltaYears -= 0.02;
+    reasons.push('Feeling physically great');
+  } else if (metrics.bodySignals.includes('None')) {
+    deltaYears -= 0.01;
+    reasons.push('No physical discomfort');
   } else {
-    deltaYears = 0.15;
+    let symptomsCount = 0;
+    if (metrics.bodySignals.includes('Bloating')) symptomsCount++;
+    if (metrics.bodySignals.includes('Headache')) symptomsCount++;
+    if (metrics.bodySignals.includes('Muscle soreness')) symptomsCount++;
+    
+    if (symptomsCount > 0) {
+      const load = Math.min(0.03, symptomsCount * 0.01);
+      deltaYears += load;
+      reasons.push(`Physical discomfort (${symptomsCount} signals)`);
+    }
   }
+
+  // Rejuvenation Behaviors (Multi-select)
+  if (metrics.rejuvenationBehaviors.includes('None')) {
+    deltaYears += 0.03;
+    reasons.push('No intentional recovery');
+  } else {
+    const behaviorCount = metrics.rejuvenationBehaviors.filter(b => b !== 'None').length;
+    if (behaviorCount >= 2) {
+      deltaYears -= 0.02;
+      reasons.push('Active recovery (2+ behaviors)');
+    } else if (behaviorCount === 1) {
+      deltaYears -= 0.01;
+      reasons.push('Active recovery (1 behavior)');
+  }
+  }
+
+  // Clamp results to user specified range
+  deltaYears = Math.max(-0.20, Math.min(0.30, deltaYears));
+  
+  // Calculate a simplified score (0-100) based on where deltaYears falls in the -0.2 to +0.3 range
+  // -0.2 -> 100, +0.3 -> 0
+  const score = Math.round(((0.3 - deltaYears) / 0.5) * 100);
 
   return { score, deltaYears, reasons };
 }
 
 /**
  * Applies daily metrics to update the biological age state.
- * Converts the daily score into a biological age delta and updates the state.
- *
- * @param prev - Previous biological age state
- * @param metrics - Daily health metrics
- * @returns Updated state and the new daily entry
  */
 export function applyDailyAgeUpdate(
   prev: BiologicalAgeState,
   metrics: DailyMetrics
 ): { next: BiologicalAgeState; entry: DailyAgeEntry } {
-  const { score, deltaYears, reasons } = calculateDailyScore(metrics);
+  const { deltaYears, reasons } = calculateDailyScore(metrics);
 
-  // Compute new current biological age
-  const currentBiologicalAgeYears =
-    prev.currentBiologicalAgeYears + deltaYears;
+  const currentBiologicalAgeYears = prev.currentBiologicalAgeYears + deltaYears;
+  const agingDebtYears = currentBiologicalAgeYears - prev.chronologicalAgeYears;
 
-  // Compute new aging debt (difference from baseline biological age)
-  const agingDebtYears = currentBiologicalAgeYears - prev.baselineBiologicalAgeYears;
-
-  // Update streaks based on threshold
   const threshold = 0.001;
   let rejuvenationStreakDays = prev.rejuvenationStreakDays;
   let accelerationStreakDays = prev.accelerationStreakDays;
@@ -168,19 +151,15 @@ export function applyDailyAgeUpdate(
     rejuvenationStreakDays = 0;
     totalAccelerationDays += 1;
   }
-  // If deltaYears === 0, keep both streaks and totals as they were
 
-  // Build daily entry
   const entry: DailyAgeEntry = {
     date: metrics.date,
     deltaYears,
     reasons,
   };
 
-  // Append to history and keep last ~30 entries
   const history = [...prev.history, entry].slice(-30);
 
-  // Build new state
   const next: BiologicalAgeState = {
     ...prev,
     currentBiologicalAgeYears,
@@ -195,13 +174,6 @@ export function applyDailyAgeUpdate(
   return { next, entry };
 }
 
-/**
- * Creates an initial biological age state for a user.
- * Sets biological age equal to chronological age at start.
- *
- * @param chronologicalAgeYears - User's actual age in years
- * @returns Initial biological age state
- */
 export function createInitialBiologicalAgeState(
   chronologicalAgeYears: number
 ): BiologicalAgeState {
@@ -217,4 +189,3 @@ export function createInitialBiologicalAgeState(
     totalAccelerationDays: 0,
   };
 }
-
