@@ -37,8 +37,12 @@ export interface OnboardingSubmitResponse {
 
 export interface UserDocument {
   userId: string;
+  email?: string | null;
+  firstName?: string | null;
+  lastName?: string | null;
+  dateOfBirth?: string | null; // ISO date string, e.g. "1990-05-15"
+  timezone?: string | null; // IANA timezone string, e.g. "Europe/Istanbul", "America/New_York"
   chronologicalAgeYears: number;
-  dateOfBirth?: string;
   onboardingAnswers: OnboardingAnswers;
   onboardingTotalScore: number;
   baselineBiologicalAgeYears: number;
@@ -67,7 +71,9 @@ export interface DailyMetrics {
 }
 
 export interface DailyEntryDocument {
-  date: string;
+  userId: string; // User ID for querying
+  dateKey: string; // YYYY-MM-DD format computed in user's timezone
+  date: string; // Kept for backward compatibility (same as dateKey)
   sleepHours: number;
   steps: number;
   vigorousMinutes: number;
@@ -124,5 +130,6 @@ export interface StatsSummaryResponse {
   weeklyHistory: HistoryPoint[];
   monthlyHistory: HistoryPoint[];
   yearlyHistory: HistoryPoint[];
+  hasCompletedOnboarding: boolean;
 }
 
