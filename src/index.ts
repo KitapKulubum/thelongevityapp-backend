@@ -22,6 +22,9 @@ import {
   getDailyEntry,
   listDailyEntries,
   updateUserAfterDaily,
+  hasCompletedOnboarding,
+  getTodayDateKey,
+  hasDailyEntryForDateKey,
 } from './longevity/longevityStore';
 import {
   OnboardingSubmitRequest,
@@ -34,7 +37,7 @@ import {
   StatsSummaryResponse,
 } from './longevity/longevityModel';
 import { requireAuth, AuthenticatedRequest } from './auth/authMiddleware';
-import { verifyIdToken, getOrCreateUserProfile } from './auth/firebaseAuth';
+import { verifyIdToken, getOrCreateUserProfile, calculateAgeFromDateOfBirth } from './auth/firebaseAuth';
 import { firestore } from './config/firestore';
 
 const clampValue = (value: number, min: number, max: number) =>
@@ -98,21 +101,46 @@ app.post('/api/ingest-log', async (req, res) => {
 /**
  * POST /api/auth/me
  * Verifies idToken and returns/creates Firestore user profile.
+ * Accepts optional firstName, lastName, dateOfBirth for sign-up flow.
  */
 app.post('/api/auth/me', async (req, res) => {
   try {
-    const { idToken } = req.body || {};
+    const { idToken, firstName, lastName, dateOfBirth } = req.body || {};
     if (!idToken || typeof idToken !== 'string') {
       return res.status(400).json({ error: 'idToken is required' });
     }
 
     const decoded = await verifyIdToken(idToken);
-    const profile = await getOrCreateUserProfile(decoded.uid, decoded.email);
+    
+    // Prepare profile data if provided (typically during sign-up)
+    const profileData: { firstName?: string; lastName?: string; dateOfBirth?: string } = {};
+    if (firstName !== undefined && typeof firstName === 'string') {
+      profileData.firstName = firstName.trim() || undefined;
+    }
+    if (lastName !== undefined && typeof lastName === 'string') {
+      profileData.lastName = lastName.trim() || undefined;
+    }
+    if (dateOfBirth !== undefined && typeof dateOfBirth === 'string') {
+      // Validate date format (ISO date string YYYY-MM-DD)
+      const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
+      if (dateRegex.test(dateOfBirth)) {
+        profileData.dateOfBirth = dateOfBirth;
+      } else {
+        return res.status(400).json({ error: 'dateOfBirth must be in ISO format (YYYY-MM-DD)' });
+      }
+    }
+
+    const profile = await getOrCreateUserProfile(decoded.uid, decoded.email, 
+      Object.keys(profileData).length > 0 ? profileData : undefined
+    );
+
+    const completedOnboarding = await hasCompletedOnboarding(decoded.uid);
 
     return res.json({
       uid: decoded.uid,
       email: decoded.email ?? null,
       profile,
+      hasCompletedOnboarding: completedOnboarding,
     });
   } catch (error: any) {
     console.error('[auth/me] error:', error);
@@ -126,17 +154,80 @@ app.post('/api/auth/me', async (req, res) => {
 /**
  * PATCH /api/auth/profile
  * Protected update of basic profile fields.
+ * Supports: firstName, lastName, dateOfBirth, chronologicalAgeYears, timezone
+ * If dateOfBirth is updated, chronologicalAgeYears will be recalculated.
  */
 app.patch('/api/auth/profile', requireAuth, async (req: AuthenticatedRequest, res) => {
   try {
     const userId = req.user!.uid;
     const updates: any = {};
+    
+    // Handle firstName
+    if (req.body?.firstName !== undefined) {
+      if (typeof req.body.firstName === 'string') {
+        updates.firstName = req.body.firstName.trim() || null;
+      } else if (req.body.firstName === null) {
+        updates.firstName = null;
+      } else {
+        return res.status(400).json({ error: 'firstName must be a string or null' });
+      }
+    }
+    
+    // Handle lastName
+    if (req.body?.lastName !== undefined) {
+      if (typeof req.body.lastName === 'string') {
+        updates.lastName = req.body.lastName.trim() || null;
+      } else if (req.body.lastName === null) {
+        updates.lastName = null;
+      } else {
+        return res.status(400).json({ error: 'lastName must be a string or null' });
+      }
+    }
+    
+    // Handle dateOfBirth
+    if (req.body?.dateOfBirth !== undefined) {
+      if (req.body.dateOfBirth === null) {
+        updates.dateOfBirth = null;
+      } else if (typeof req.body.dateOfBirth === 'string') {
+        const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
+        if (dateRegex.test(req.body.dateOfBirth)) {
+          updates.dateOfBirth = req.body.dateOfBirth;
+          // Recalculate chronological age from dateOfBirth
+          const calculatedAge = calculateAgeFromDateOfBirth(req.body.dateOfBirth);
+          if (calculatedAge !== null) {
+            updates.chronologicalAgeYears = calculatedAge;
+          }
+        } else {
+          return res.status(400).json({ error: 'dateOfBirth must be in ISO format (YYYY-MM-DD)' });
+        }
+      } else {
+        return res.status(400).json({ error: 'dateOfBirth must be a string or null' });
+      }
+    }
+    
+    // Handle direct chronologicalAgeYears update (deprecated, prefer dateOfBirth)
     if (req.body?.chronologicalAgeYears !== undefined) {
       const val = Number(req.body.chronologicalAgeYears);
       if (Number.isNaN(val)) {
         return res.status(400).json({ error: 'chronologicalAgeYears must be a number' });
       }
       updates.chronologicalAgeYears = val;
+    }
+    
+    // Handle timezone (IANA timezone string, e.g. "Europe/Istanbul", "America/New_York")
+    if (req.body?.timezone !== undefined) {
+      if (req.body.timezone === null) {
+        updates.timezone = null;
+      } else if (typeof req.body.timezone === 'string') {
+        const trimmed = req.body.timezone.trim();
+        if (trimmed.length > 0) {
+          updates.timezone = trimmed;
+        } else {
+          return res.status(400).json({ error: 'timezone must be a valid IANA timezone string or null' });
+        }
+      } else {
+        return res.status(400).json({ error: 'timezone must be a string or null' });
+      }
     }
 
     if (Object.keys(updates).length === 0) {
@@ -154,6 +245,24 @@ app.patch('/api/auth/profile', requireAuth, async (req: AuthenticatedRequest, re
   }
 });
 
+/**
+ * POST /api/auth/logout
+ * Client-side logout endpoint (logout is primarily handled client-side with Firebase Auth).
+ * This endpoint can be called for consistency, but the actual logout happens on the client.
+ * Returns success confirmation.
+ */
+app.post('/api/auth/logout', requireAuth, async (req: AuthenticatedRequest, res) => {
+  try {
+    // Logout is handled client-side by Firebase Auth SDK.
+    // This endpoint provides a place for any server-side cleanup if needed in the future.
+    // For now, it just confirms the request was authenticated.
+    return res.json({ success: true, message: 'Logout successful. Please sign out on the client side using Firebase Auth SDK.' });
+  } catch (error: any) {
+    console.error('[auth/logout] error:', error);
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
 app.post('/api/age/daily-update', requireAuth, async (req: AuthenticatedRequest, res) => {
   console.log('[daily-update] body:', JSON.stringify(req.body, null, 2));
   try {
@@ -165,9 +274,30 @@ app.post('/api/age/daily-update', requireAuth, async (req: AuthenticatedRequest,
       return res.status(404).json({ error: 'User not found. Complete onboarding first.' });
     }
 
+    // Get user's timezone (default to UTC if not set)
+    const userTimezone = user.timezone || 'UTC';
+    
+    // Calculate today's dateKey in user's timezone
+    const todayDateKey = getTodayDateKey(userTimezone);
+    
+    // Check if a daily entry already exists for today's dateKey
+    const entryExists = await hasDailyEntryForDateKey(userId, todayDateKey);
+    if (entryExists) {
+      return res.status(409).json({
+        error: 'Daily check-in already completed',
+        message: 'You have already completed your daily check-in for today.',
+        dateKey: todayDateKey,
+      });
+    }
+
     const chronologicalAgeYears = user.chronologicalAgeYears;
 
-    const metrics = normalizeDailyMetrics(body.metrics ?? body);
+    // Normalize metrics and set date to today's dateKey
+    const rawMetrics = normalizeDailyMetrics(body.metrics ?? body);
+    const metrics: DailyMetrics = {
+      ...rawMetrics,
+      date: todayDateKey, // Use dateKey as the date field
+    };
 
     const { score, deltaYears, reasons } = calculateDailyScore(metrics);
 
@@ -195,8 +325,10 @@ app.post('/api/age/daily-update', requireAuth, async (req: AuthenticatedRequest,
     }
 
     // Persist daily entry with snapshot of the new global state
+    // Note: saveDailyEntry now requires dateKey as second parameter and will throw if entry exists
     await saveDailyEntry(
       userId,
+      todayDateKey,
       metrics,
       { score, deltaYears, reasons },
       {
@@ -229,7 +361,7 @@ app.post('/api/age/daily-update', requireAuth, async (req: AuthenticatedRequest,
     };
 
     const today: TodayEntry = {
-      date: metrics.date,
+      date: todayDateKey,
       score,
       deltaYears,
       reasons,
@@ -242,6 +374,8 @@ app.post('/api/age/daily-update', requireAuth, async (req: AuthenticatedRequest,
 
     console.log('[daily-update] result:', {
       userId,
+      timezone: userTimezone,
+      dateKey: todayDateKey,
       chronologicalAgeYears,
       baselineBiologicalAgeYears,
       currentBiologicalAgeYears,
@@ -253,6 +387,15 @@ app.post('/api/age/daily-update', requireAuth, async (req: AuthenticatedRequest,
     return res.json(response);
   } catch (error: any) {
     console.error('[daily-update] error:', error);
+    
+    // Handle specific error for duplicate entry (shouldn't happen due to pre-check, but handle anyway)
+    if (error.message && error.message.includes('Daily check-in already completed')) {
+      return res.status(409).json({
+        error: 'Daily check-in already completed',
+        message: error.message,
+      });
+    }
+    
     return res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -515,6 +658,15 @@ app.post('/api/onboarding/submit', requireAuth, async (req: AuthenticatedRequest
       }
     }
 
+    // Check if onboarding is already completed
+    const alreadyCompleted = await hasCompletedOnboarding(userId);
+    if (alreadyCompleted) {
+      return res.status(409).json({
+        error: 'Onboarding already completed',
+        message: 'User has already completed onboarding. To update onboarding data, please contact support.',
+      });
+    }
+
     const chronologicalAge = Number(chronologicalAgeYears);
     console.log('[onboarding] computeOnboardingResult start');
     const result = calculateOnboardingResult(answers, chronologicalAge);
@@ -583,11 +735,18 @@ app.get('/api/stats/summary', requireAuth, async (req: AuthenticatedRequest, res
       totalAccelerationDays: user.totalAccelerationDays ?? 0,
     };
 
-    const todayDate = new Date().toISOString().slice(0, 10);
-    const todayEntry = await getDailyEntry(userId, todayDate);
+    // Get today's dateKey in user's timezone
+    const userTimezone = user.timezone || 'UTC';
+    const todayDateKey = getTodayDateKey(userTimezone);
+    const todayEntry = await getDailyEntry(userId, todayDateKey);
 
     const entries = await listDailyEntries(userId);
-    const sorted = entries.sort((a, b) => a.date.localeCompare(b.date));
+    // Sort by dateKey if available, otherwise fall back to date
+    const sorted = entries.sort((a, b) => {
+      const dateA = a.dateKey || a.date;
+      const dateB = b.dateKey || b.date;
+      return dateA.localeCompare(dateB);
+    });
 
     // Aggregate history; use stored snapshots when available, otherwise accumulate.
     let runningBio = baselineBiologicalAgeYears;
@@ -598,7 +757,7 @@ app.get('/api/stats/summary', requireAuth, async (req: AuthenticatedRequest, res
         runningBio += entry.deltaYears;
       }
       return {
-        date: entry.date,
+        date: entry.dateKey || entry.date,
         biologicalAgeYears: runningBio,
         deltaYears: entry.deltaYears,
         score: entry.score,
@@ -614,12 +773,14 @@ app.get('/api/stats/summary', requireAuth, async (req: AuthenticatedRequest, res
     const monthlyHistory = history.filter((h) => daysAgo(h.date) <= 60);
     const yearlyHistory = history.filter((h) => daysAgo(h.date) <= 365);
 
+    const completedOnboarding = await hasCompletedOnboarding(userId);
+
     const response: StatsSummaryResponse = {
       userId,
       state,
       today: todayEntry
         ? {
-            date: todayEntry.date,
+            date: todayEntry.dateKey || todayEntry.date,
             score: todayEntry.score,
             deltaYears: todayEntry.deltaYears,
             reasons: todayEntry.reasons,
@@ -628,6 +789,7 @@ app.get('/api/stats/summary', requireAuth, async (req: AuthenticatedRequest, res
       weeklyHistory,
       monthlyHistory,
       yearlyHistory,
+      hasCompletedOnboarding: completedOnboarding,
     };
 
     console.log('[stats/summary] Response ready in', Date.now() - startTime, 'ms', {
