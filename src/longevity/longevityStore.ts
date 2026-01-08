@@ -102,9 +102,31 @@ export async function getUserDocument(userId: string): Promise<UserDocument | nu
  */
 export async function hasCompletedOnboarding(userId: string): Promise<boolean> {
   const userDoc = await getUserDocument(userId);
-  if (!userDoc) return false;
+  if (!userDoc) {
+    console.log('[hasCompletedOnboarding] User document not found for userId:', userId);
+    return false;
+  }
+  
   // Check if onboardingAnswers exists and is not empty/undefined
-  return !!(userDoc.onboardingAnswers && typeof userDoc.onboardingAnswers === 'object');
+  const hasAnswers = !!(userDoc.onboardingAnswers && typeof userDoc.onboardingAnswers === 'object');
+  
+  // Additional check: verify onboardingAnswers has required fields
+  if (hasAnswers && userDoc.onboardingAnswers) {
+    const requiredFields = ['activity', 'smokingAlcohol', 'metabolicHealth', 'energyFocus', 
+                           'visceralFat', 'sleep', 'stress', 'muscle', 'nutritionPattern', 'sugar'];
+    const hasAllFields = requiredFields.every(field => 
+      userDoc.onboardingAnswers![field as keyof typeof userDoc.onboardingAnswers] !== undefined &&
+      userDoc.onboardingAnswers![field as keyof typeof userDoc.onboardingAnswers] !== null
+    );
+    
+    if (!hasAllFields) {
+      console.log('[hasCompletedOnboarding] User has onboardingAnswers but missing required fields:', userId);
+      return false;
+    }
+  }
+  
+  console.log('[hasCompletedOnboarding] userId:', userId, 'hasCompletedOnboarding:', hasAnswers);
+  return hasAnswers;
 }
 
 /**
@@ -191,6 +213,19 @@ export async function listDailyEntries(userId: string): Promise<DailyEntryDocume
 }
 
 /**
+ * Get last N daily entries sorted by date ascending (for trends).
+ * Returns up to 365 entries.
+ */
+export async function getDailyEntriesForTrends(
+  userId: string,
+  limit: number = 365
+): Promise<DailyEntryDocument[]> {
+  const allEntries = await listDailyEntries(userId);
+  // Return last N entries (most recent)
+  return allEntries.slice(-limit);
+}
+
+/**
  * Update root user state after daily application.
  */
 export async function updateUserAfterDaily(
@@ -212,5 +247,48 @@ export async function updateUserAfterDaily(
     },
     { merge: true }
   );
+}
+
+/**
+ * Save a chat message to conversation history.
+ */
+export async function saveChatMessage(
+  userId: string,
+  role: 'user' | 'assistant',
+  content: string
+): Promise<void> {
+  const ref = firestore.collection('users').doc(userId).collection('chatHistory');
+  await ref.add({
+    userId,
+    role,
+    content,
+    createdAt: serverTimestamp(),
+  });
+}
+
+/**
+ * Get recent chat history for a user (last N messages).
+ */
+export async function getChatHistory(
+  userId: string,
+  limit: number = 10
+): Promise<Array<{ role: 'user' | 'assistant'; content: string; createdAt: string }>> {
+  const ref = firestore.collection('users').doc(userId).collection('chatHistory');
+  const snap = await ref.orderBy('createdAt', 'desc').limit(limit).get();
+  
+  if (snap.empty) return [];
+  
+  const messages = snap.docs
+    .map((doc) => {
+      const data = firestoreToJSON(doc.data());
+      return {
+        role: data.role as 'user' | 'assistant',
+        content: data.content as string,
+        createdAt: data.createdAt as string,
+      };
+    })
+    .reverse(); // Reverse to get chronological order
+  
+  return messages;
 }
 

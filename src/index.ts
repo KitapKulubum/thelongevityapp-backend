@@ -1,5 +1,6 @@
 import express, { Express } from 'express';
 import cors from 'cors';
+import { DateTime } from 'luxon';
 import { ingestKnowledgeDir, ingestUserLog } from './rag/ingest';
 import { longevityChat } from './rag/chat';
 import { generateAgeMessage } from './age/ageMessages';
@@ -25,16 +26,30 @@ import {
   hasCompletedOnboarding,
   getTodayDateKey,
   hasDailyEntryForDateKey,
+  getChatHistory,
+  saveChatMessage,
+  getDailyEntriesForTrends,
 } from './longevity/longevityStore';
 import {
   OnboardingSubmitRequest,
   OnboardingSubmitResponse,
+  DailyEntryDocument,
+  DeltaAnalyticsResponse,
+  WeeklyDeltaResponse,
+  MonthlyDeltaResponse,
+  YearlyDeltaResponse,
+  DeltaSummary,
+  DeltaSeriesPoint,
+  MonthlyDeltaSeriesPoint,
   BiologicalAgeState,
   DailyMetrics,
   DailyUpdateResponse,
   HistoryPoint,
   TodayEntry,
   StatsSummaryResponse,
+  TrendResponse,
+  TrendPeriod,
+  TrendPoint,
 } from './longevity/longevityModel';
 import { requireAuth, AuthenticatedRequest } from './auth/authMiddleware';
 import { verifyIdToken, getOrCreateUserProfile, calculateAgeFromDateOfBirth } from './auth/firebaseAuth';
@@ -70,17 +85,43 @@ function normalizeDailyMetrics(body: any): DailyMetrics {
   };
 }
 
-app.post('/api/chat', async (req, res) => {
+app.post('/api/chat', requireAuth, async (req: AuthenticatedRequest, res) => {
   try {
-    const { userId, message } = req.body;
-    if (!userId || !message) {
-      return res.status(400).json({ error: 'userId and message are required' });
+    const { message } = req.body;
+    const userId = req.user!.uid; // Get userId from auth token
+    
+    console.log('[chat] Request received:', { userId, messageLength: message?.length });
+    
+    if (!message) {
+      console.error('[chat] Missing required field: message');
+      return res.status(400).json({ error: 'message is required' });
     }
-    const result = await longevityChat({ userId, message });
+
+    if (typeof message !== 'string' || message.trim().length === 0) {
+      console.error('[chat] Invalid message:', message);
+      return res.status(400).json({ error: 'message must be a non-empty string' });
+    }
+
+    console.log('[chat] Calling longevityChat...');
+    const result = await longevityChat({ userId, message: message.trim() });
+    console.log('[chat] Success, answer length:', result.answer?.length);
+    
     return res.json(result);
   } catch (error: any) {
-    console.error(error);
-    return res.status(500).json({ error: 'Internal server error' });
+    console.error('[chat] Error:', error);
+    console.error('[chat] Error stack:', error?.stack);
+    console.error('[chat] Error message:', error?.message);
+    
+    // Return more detailed error in development
+    const errorMessage = process.env.NODE_ENV === 'development' 
+      ? error?.message || 'Internal server error'
+      : 'Internal server error';
+    
+    return res.status(500).json({ 
+      error: 'Internal server error',
+      message: errorMessage,
+      ...(process.env.NODE_ENV === 'development' && { stack: error?.stack })
+    });
   }
 });
 
@@ -314,14 +355,103 @@ app.post('/api/age/daily-update', requireAuth, async (req: AuthenticatedRequest,
     let totalRejuvenationDays = user.totalRejuvenationDays ?? 0;
     let totalAccelerationDays = user.totalAccelerationDays ?? 0;
 
-    if (deltaYears <= -threshold) {
-      rejuvenationStreakDays += 1;
-      accelerationStreakDays = 0;
-      totalRejuvenationDays += 1;
-    } else if (deltaYears >= threshold) {
-      accelerationStreakDays += 1;
-      rejuvenationStreakDays = 0;
-      totalAccelerationDays += 1;
+    // Calculate delta vs previous entry (biological age difference)
+    // Get previous entry to calculate actual delta
+    const allEntries = await listDailyEntries(userId);
+    let actualDeltaYears = deltaYears; // Default to calculated delta from daily score
+    
+    // Get last check-in date for streak calculation
+    let lastCheckInDateKey: string | null = null;
+    if (allEntries.length > 0) {
+      // Get the most recent entry (last one in sorted array)
+      const previousEntry = allEntries[allEntries.length - 1];
+      lastCheckInDateKey = previousEntry.dateKey || previousEntry.date || null;
+      const previousBioAge = previousEntry.currentBiologicalAgeYears ?? baselineBiologicalAgeYears;
+      // Calculate actual delta: today's bio age - previous bio age
+      actualDeltaYears = Math.round((currentBiologicalAgeYears - previousBioAge) * 100) / 100;
+      console.log('[daily-update] Calculated delta vs previous entry:', {
+        previousBioAge,
+        currentBioAge: currentBiologicalAgeYears,
+        actualDeltaYears,
+      });
+    } else {
+      // First entry: delta is 0 (no previous entry to compare)
+      actualDeltaYears = 0;
+      console.log('[daily-update] First entry, delta set to 0');
+    }
+
+    // Calculate streak based on consecutive days (date-based)
+    // Convert dateKeys (YYYY-MM-DD format) to DateTime objects for comparison
+    // Parse in user's timezone to ensure timezone-safe calendar day calculation
+    const todayDate = DateTime.fromISO(todayDateKey, { zone: userTimezone });
+    let diffInDays: number | null = null;
+    
+    if (lastCheckInDateKey) {
+      const lastCheckInDate = DateTime.fromISO(lastCheckInDateKey, { zone: userTimezone });
+      if (todayDate.isValid && lastCheckInDate.isValid) {
+        // Calculate difference in calendar days
+        // Use startOf('day') to normalize and ensure accurate calendar day calculation
+        const todayStart = todayDate.startOf('day');
+        const lastStart = lastCheckInDate.startOf('day');
+        const diff = todayStart.diff(lastStart, 'days');
+        diffInDays = Math.round(diff.as('days'));
+        console.log('[daily-update] Date comparison for streak:', {
+          todayDateKey,
+          lastCheckInDateKey,
+          diffInDays,
+          userTimezone,
+        });
+      } else {
+        console.warn('[daily-update] Invalid date parsing:', {
+          todayDateKey,
+          lastCheckInDateKey,
+          todayValid: todayDate.isValid,
+          lastValid: lastCheckInDate.isValid,
+        });
+      }
+    }
+
+    // Update streaks based on consecutive days and actual delta
+    // Rules:
+    // - diffInDays === 0: same day (shouldn't happen due to duplicate check, but handle safely)
+    // - diffInDays === 1: consecutive day → increment appropriate streak
+    // - diffInDays > 1: gap → reset streak to 1 (if delta is significant) or 0
+    // - diffInDays === null: first check-in → set streak to 1 (if delta is significant) or 0
+    
+    if (diffInDays === null || diffInDays > 1) {
+      // Gap or first check-in: reset streaks
+      if (actualDeltaYears <= -threshold) {
+        rejuvenationStreakDays = 1;
+        accelerationStreakDays = 0;
+        totalRejuvenationDays += 1;
+      } else if (actualDeltaYears >= threshold) {
+        accelerationStreakDays = 1;
+        rejuvenationStreakDays = 0;
+        totalAccelerationDays += 1;
+      } else {
+        // No significant delta: reset both streaks to 0
+        rejuvenationStreakDays = 0;
+        accelerationStreakDays = 0;
+      }
+    } else if (diffInDays === 1) {
+      // Consecutive day: increment appropriate streak
+      if (actualDeltaYears <= -threshold) {
+        rejuvenationStreakDays += 1;
+        accelerationStreakDays = 0;
+        totalRejuvenationDays += 1;
+      } else if (actualDeltaYears >= threshold) {
+        accelerationStreakDays += 1;
+        rejuvenationStreakDays = 0;
+        totalAccelerationDays += 1;
+      } else {
+        // No significant delta: reset both streaks to 0
+        rejuvenationStreakDays = 0;
+        accelerationStreakDays = 0;
+      }
+    } else if (diffInDays === 0) {
+      // Same day: do nothing (streak unchanged)
+      // This shouldn't happen due to duplicate check, but handle safely
+      console.log('[daily-update] Same day check-in detected, streaks unchanged');
     }
 
     // Persist daily entry with snapshot of the new global state
@@ -330,7 +460,7 @@ app.post('/api/age/daily-update', requireAuth, async (req: AuthenticatedRequest,
       userId,
       todayDateKey,
       metrics,
-      { score, deltaYears, reasons },
+      { score, deltaYears: actualDeltaYears, reasons }, // Use actual delta vs previous entry
       {
         currentBiologicalAgeYears,
         currentAgingDebtYears,
@@ -708,6 +838,44 @@ app.post('/api/onboarding/submit', requireAuth, async (req: AuthenticatedRequest
 });
 
 /**
+ * GET /api/debug/onboarding-status
+ * Debug endpoint to check onboarding status for current user.
+ */
+app.get('/api/debug/onboarding-status', requireAuth, async (req: AuthenticatedRequest, res) => {
+  try {
+    const userId = req.user!.uid;
+    const userDoc = await getUserDocument(userId);
+    
+    if (!userDoc) {
+      return res.json({
+        userId,
+        userExists: false,
+        hasCompletedOnboarding: false,
+        onboardingAnswers: null,
+        message: 'User document not found',
+      });
+    }
+    
+    const hasAnswers = !!(userDoc.onboardingAnswers && typeof userDoc.onboardingAnswers === 'object');
+    const completed = await hasCompletedOnboarding(userId);
+    
+    return res.json({
+      userId,
+      userExists: true,
+      hasCompletedOnboarding: completed,
+      onboardingAnswers: userDoc.onboardingAnswers || null,
+      onboardingAnswersType: typeof userDoc.onboardingAnswers,
+      baselineBiologicalAgeYears: userDoc.baselineBiologicalAgeYears,
+      onboardingTotalScore: userDoc.onboardingTotalScore,
+      message: completed ? 'Onboarding completed' : 'Onboarding not completed',
+    });
+  } catch (error: any) {
+    console.error('[debug/onboarding-status] error:', error);
+    return res.status(500).json({ error: 'Internal server error', message: error.message });
+  }
+});
+
+/**
  * GET /api/stats/summary?userId=
  * Returns biological age state and chart-friendly history arrays.
  */
@@ -802,6 +970,587 @@ app.get('/api/stats/summary', requireAuth, async (req: AuthenticatedRequest, res
     return res.json(response);
   } catch (error: any) {
     console.error('[stats/summary] error after', Date.now() - startTime, 'ms:', error);
+    return res.status(500).json({
+      error: 'Internal server error',
+      debug: process.env.NODE_ENV === 'development' ? String(error?.message ?? error) : undefined,
+    });
+  }
+});
+
+/**
+ * Helper function to round to 2 decimals
+ */
+function roundTo2Decimals(value: number): number {
+  return Math.round(value * 100) / 100;
+}
+
+/**
+ * Calculate trend period data
+ * If entries.length < requiredDays but >= 2, calculate trend from first to last entry
+ * This allows showing graphs even with limited data
+ */
+function calculateTrendPeriod(
+  entries: DailyEntryDocument[],
+  requiredDays: number,
+  pointsCount: number
+): TrendPeriod {
+  // Always return points if we have any entries
+  const points: TrendPoint[] = entries
+    .slice(-pointsCount)
+    .map((e) => ({
+      date: e.dateKey || e.date,
+      biologicalAge: roundTo2Decimals(e.currentBiologicalAgeYears ?? 0),
+    }));
+
+  // If we have less than required days, calculate partial trend (first to last)
+  if (entries.length < requiredDays) {
+    // If we have at least 2 entries, calculate trend from first to last
+    if (entries.length >= 2) {
+      const firstEntry = entries[0];
+      const lastEntry = entries[entries.length - 1];
+      
+      const firstBioAge = firstEntry.currentBiologicalAgeYears ?? 0;
+      const lastBioAge = lastEntry.currentBiologicalAgeYears ?? 0;
+      const value = roundTo2Decimals(lastBioAge - firstBioAge);
+
+      return {
+        value,
+        available: false, // Not enough data for full period, but we have a partial trend
+        points,
+      };
+    }
+    
+    // Less than 2 entries - no trend to calculate
+    return {
+      value: null,
+      available: false,
+      points,
+    };
+  }
+
+  // We have enough entries for full period calculation
+  const todayEntry = entries[entries.length - 1];
+  const pastEntry = entries[entries.length - requiredDays];
+  
+  const todayBioAge = todayEntry.currentBiologicalAgeYears ?? 0;
+  const pastBioAge = pastEntry.currentBiologicalAgeYears ?? 0;
+  const value = roundTo2Decimals(todayBioAge - pastBioAge);
+
+  return {
+    value,
+    available: true,
+    points,
+  };
+}
+
+/**
+ * Delta Analytics Helper Functions
+ */
+
+/**
+ * Get week range (Monday to Sunday) for a given date in user's timezone
+ * Luxon's startOf('week') uses Monday as the first day (ISO 8601 standard)
+ */
+function getWeekRange(date: DateTime, timezone: string): { start: string; end: string } {
+  const dt = date.setZone(timezone);
+  // Get Monday of the week (Luxon uses ISO 8601, so Monday = weekday 1)
+  const monday = dt.startOf('week');
+  const sunday = monday.plus({ days: 6 });
+  return {
+    start: monday.toISODate()!,
+    end: sunday.toISODate()!,
+  };
+}
+
+/**
+ * Get month range (first day to last day) for a given date in user's timezone
+ */
+function getMonthRange(date: DateTime, timezone: string): { start: string; end: string } {
+  const dt = date.setZone(timezone);
+  const firstDay = dt.startOf('month');
+  const lastDay = dt.endOf('month');
+  return {
+    start: firstDay.toISODate()!,
+    end: lastDay.toISODate()!,
+  };
+}
+
+/**
+ * Get year range (January 1 to December 31) for a given date in user's timezone
+ */
+function getYearRange(date: DateTime, timezone: string): { start: string; end: string } {
+  const dt = date.setZone(timezone);
+  const firstDay = dt.startOf('year');
+  const lastDay = dt.endOf('year');
+  return {
+    start: firstDay.toISODate()!,
+    end: lastDay.toISODate()!,
+  };
+}
+
+/**
+ * Generate all dates in a range (inclusive)
+ */
+function generateDateRange(start: string, end: string): string[] {
+  const dates: string[] = [];
+  const startDate = DateTime.fromISO(start);
+  const endDate = DateTime.fromISO(end);
+  let current = startDate;
+  
+  while (current <= endDate) {
+    dates.push(current.toISODate()!);
+    current = current.plus({ days: 1 });
+  }
+  
+  return dates;
+}
+
+/**
+ * Generate all months in a year range
+ */
+function generateMonthRange(start: string, end: string): string[] {
+  const months: string[] = [];
+  const startDate = DateTime.fromISO(start);
+  const endDate = DateTime.fromISO(end);
+  let current = startDate.startOf('month');
+  
+  while (current <= endDate) {
+    months.push(current.toFormat('yyyy-MM'));
+    current = current.plus({ months: 1 });
+  }
+  
+  return months;
+}
+
+/**
+ * Calculate summary from entries in a specific range
+ * Note: deltaYears in system: negative = rejuvenation, positive = aging
+ * For analytics: we invert to match user definition (positive = rejuvenation, negative = aging)
+ */
+function calculateRangeDeltaSummary(entries: DailyEntryDocument[]): {
+  rangeNetDeltaYears: number;
+  rejuvenationYears: number;
+  agingYears: number;
+  checkIns: number;
+} {
+  let rangeNetDelta = 0;
+  let rejuvenation = 0;
+  let aging = 0;
+  
+  entries.forEach((entry) => {
+    // Invert deltaYears: negative deltaYears (rejuvenation) becomes positive delta
+    // positive deltaYears (aging) becomes negative delta
+    const delta = -(entry.deltaYears || 0);
+    rangeNetDelta += delta;
+    
+    // rejuvenation = sum(max(delta, 0)) - positive deltas
+    if (delta > 0) {
+      rejuvenation += delta;
+    }
+    // aging = sum(abs(min(delta, 0))) - negative deltas (as positive)
+    else if (delta < 0) {
+      aging += Math.abs(delta);
+    }
+  });
+  
+  const checkIns = entries.length;
+  
+  return {
+    rangeNetDeltaYears: roundTo2Decimals(rangeNetDelta),
+    rejuvenationYears: roundTo2Decimals(rejuvenation),
+    agingYears: roundTo2Decimals(aging),
+    checkIns,
+  };
+}
+
+/**
+ * Calculate total delta summary (baseline + all daily deltas from onboarding)
+ * Returns total values including baseline
+ */
+function calculateTotalDeltaSummary(
+  baselineDeltaYears: number,
+  allEntries: DailyEntryDocument[]
+): {
+  netDeltaYears: number;
+  rejuvenationYears: number;
+  agingYears: number;
+} {
+  let totalDailyDelta = 0;
+  let totalRejuvenation = 0;
+  let totalAging = 0;
+  
+  allEntries.forEach((entry) => {
+    // Invert deltaYears: negative deltaYears (rejuvenation) becomes positive delta
+    const delta = -(entry.deltaYears || 0);
+    totalDailyDelta += delta;
+    
+    // Track rejuvenation (positive deltas) and aging (negative deltas)
+    if (delta > 0) {
+      totalRejuvenation += delta;
+    } else if (delta < 0) {
+      totalAging += Math.abs(delta);
+    }
+  });
+  
+  // netDeltaYears = baseline + all daily deltas
+  const netDeltaYears = baselineDeltaYears + totalDailyDelta;
+  
+  // Rejuvenation and aging are only from daily deltas (baseline is separate)
+  // But if baseline is negative (rejuvenation), we could add it to rejuvenation
+  // However, per requirements, we show total including baseline in netDeltaYears
+  // and separate rejuvenation/aging from daily deltas only
+  
+  return {
+    netDeltaYears: roundTo2Decimals(netDeltaYears),
+    rejuvenationYears: roundTo2Decimals(totalRejuvenation),
+    agingYears: roundTo2Decimals(totalAging),
+  };
+}
+
+/**
+ * Aggregate deltas by date
+ * Note: Return dailyDeltaYears (inverted from system deltaYears)
+ * System: negative deltaYears = rejuvenation, positive = aging
+ * Analytics: positive dailyDeltaYears = rejuvenation, negative = aging
+ */
+function aggregateDeltasByDate(
+  entries: DailyEntryDocument[],
+  dateRange: string[]
+): DeltaSeriesPoint[] {
+  // Create a map of dateKey -> sum of dailyDeltaYears (inverted)
+  const deltaMap = new Map<string, number>();
+  
+  entries.forEach((entry) => {
+    const dateKey = entry.dateKey || entry.date;
+    const currentSum = deltaMap.get(dateKey) || 0;
+    // Invert: negative deltaYears (rejuvenation) becomes positive dailyDeltaYears
+    const dailyDeltaYears = -(entry.deltaYears || 0);
+    deltaMap.set(dateKey, currentSum + dailyDeltaYears);
+  });
+  
+  // Generate series with null for missing dates
+  return dateRange.map((date) => ({
+    date,
+    dailyDeltaYears: deltaMap.has(date) ? roundTo2Decimals(deltaMap.get(date)!) : null,
+  }));
+}
+
+/**
+ * Aggregate deltas by month
+ * Note: Return netDeltaYears (inverted from system deltaYears)
+ */
+function aggregateDeltasByMonth(
+  entries: DailyEntryDocument[],
+  monthRange: string[]
+): MonthlyDeltaSeriesPoint[] {
+  // Group entries by month (YYYY-MM)
+  const monthMap = new Map<string, DailyEntryDocument[]>();
+  
+  entries.forEach((entry) => {
+    const dateKey = entry.dateKey || entry.date;
+    const month = DateTime.fromISO(dateKey).toFormat('yyyy-MM');
+    if (!monthMap.has(month)) {
+      monthMap.set(month, []);
+    }
+    monthMap.get(month)!.push(entry);
+  });
+  
+  // Generate series for each month
+  return monthRange.map((month) => {
+    const monthEntries = monthMap.get(month) || [];
+    // Invert: negative deltaYears (rejuvenation) becomes positive netDeltaYears
+    const netDeltaYears = monthEntries.reduce((sum, e) => sum + (-(e.deltaYears || 0)), 0);
+    const checkIns = monthEntries.length;
+    const avgDeltaPerCheckIn = checkIns > 0 ? netDeltaYears / checkIns : 0;
+    
+    return {
+      month,
+      netDelta: roundTo2Decimals(netDeltaYears),
+      checkIns,
+      avgDeltaPerCheckIn: roundTo2Decimals(avgDeltaPerCheckIn),
+    };
+  });
+}
+
+/**
+ * Filter entries within date range (inclusive)
+ */
+function filterEntriesInRange(
+  entries: DailyEntryDocument[],
+  start: string,
+  end: string
+): DailyEntryDocument[] {
+  return entries.filter((entry) => {
+    const dateKey = entry.dateKey || entry.date;
+    return dateKey >= start && dateKey <= end;
+  });
+}
+
+/**
+ * Calculate yearly projection
+ * Requires at least 7 days of data for a meaningful projection
+ */
+function calculateYearlyProjection(entries: DailyEntryDocument[]): TrendPeriod {
+  // Get valid deltas (non-null, non-undefined, and non-zero for first entry)
+  // First entry typically has deltaYears = 0 (no previous entry), so we filter it out
+  const validDeltas = entries
+    .map((e) => e.deltaYears)
+    .filter((d) => d !== null && d !== undefined && !isNaN(d) && d !== 0);
+
+  // Need at least 7 days of actual delta data for meaningful projection
+  // For less than 7 days, we don't provide a projection (too unreliable)
+  if (validDeltas.length < 7) {
+    // Return null value but still provide points for chart display
+    return {
+      value: null,
+      available: false,
+      projection: true,
+      points: entries.slice(-90).map((e) => ({
+        date: e.dateKey || e.date,
+        biologicalAge: roundTo2Decimals(e.currentBiologicalAgeYears ?? 0),
+      })),
+    };
+  }
+
+  // We have at least 7 days of delta data - use average delta for projection
+  // Use last min(30, N) deltas for projection
+  const deltasForProjection = validDeltas.slice(-Math.min(30, validDeltas.length));
+  const averageDelta = deltasForProjection.reduce((sum, d) => sum + d, 0) / deltasForProjection.length;
+  const projectedYearly = roundTo2Decimals(averageDelta * 365);
+
+  // Points: last min(90, N) entries
+  const pointsCount = Math.min(90, entries.length);
+  const points: TrendPoint[] = entries.slice(-pointsCount).map((e) => ({
+    date: e.dateKey || e.date,
+    biologicalAge: roundTo2Decimals(e.currentBiologicalAgeYears ?? 0),
+  }));
+
+  return {
+    value: projectedYearly,
+    available: false,
+    projection: true,
+    points,
+  };
+}
+
+/**
+ * GET /api/longevity/trends
+ * Returns weekly, monthly, and yearly trend data for the Score screen.
+ * 
+ * Response format:
+ * {
+ *   "weekly": { "value": -0.32, "available": true, "points": [...] },
+ *   "monthly": { "value": -1.10, "available": true, "points": [...] },
+ *   "yearly": { "value": -4.20, "available": false, "projection": true, "points": [...] }
+ * }
+ */
+app.get('/api/longevity/trends', requireAuth, async (req: AuthenticatedRequest, res) => {
+  try {
+    const userId = req.user!.uid;
+
+    if (!userId) {
+      return res.status(400).json({ error: 'userId is required' });
+    }
+
+    // Get user document to verify user exists
+    const user = await getUserDocument(userId);
+    if (!user) {
+      return res.status(404).json({ error: 'User not found. Complete onboarding first.' });
+    }
+
+    // Get up to 365 daily entries, sorted by date ascending
+    const entries = await getDailyEntriesForTrends(userId, 365);
+    
+    console.log('[trends] Found', entries.length, 'entries for userId:', userId);
+
+    // Calculate weekly trend (requires >= 7 entries)
+    const weekly = calculateTrendPeriod(entries, 7, 7);
+
+    // Calculate monthly trend (requires >= 30 entries)
+    const monthly = calculateTrendPeriod(entries, 30, 30);
+
+    // Calculate yearly trend
+    let yearly: TrendPeriod;
+    if (entries.length >= 365) {
+      // Actual yearly data
+      yearly = calculateTrendPeriod(entries, 365, 90);
+      yearly.projection = false;
+    } else {
+      // Projection based on average delta
+      yearly = calculateYearlyProjection(entries);
+    }
+
+    const response: TrendResponse = {
+      weekly,
+      monthly,
+      yearly,
+    };
+
+    console.log('[trends] Response:', {
+      weekly: { value: weekly.value, available: weekly.available },
+      monthly: { value: monthly.value, available: monthly.available },
+      yearly: { value: yearly.value, available: yearly.available, projection: yearly.projection },
+    });
+
+    return res.json(response);
+  } catch (error: any) {
+    console.error('[trends] error:', error);
+    return res.status(500).json({
+      error: 'Internal server error',
+      debug: process.env.NODE_ENV === 'development' ? String(error?.message ?? error) : undefined,
+    });
+  }
+});
+
+/**
+ * GET /api/analytics/delta?range=weekly|monthly|yearly
+ * Returns delta analytics for the Score screen graph.
+ * 
+ * Response format depends on range:
+ * - weekly/monthly: series with daily delta values
+ * - yearly: series with monthly netDelta values
+ */
+app.get('/api/analytics/delta', requireAuth, async (req: AuthenticatedRequest, res) => {
+  try {
+    const userId = req.user!.uid;
+    const range = (req.query.range as string) || 'weekly';
+
+    if (!['weekly', 'monthly', 'yearly'].includes(range)) {
+      return res.status(400).json({ error: 'Invalid range. Use weekly, monthly, or yearly' });
+    }
+
+    // Get user document
+    const user = await getUserDocument(userId);
+    if (!user) {
+      return res.status(404).json({ error: 'User not found. Complete onboarding first.' });
+    }
+
+    const userTimezone = user.timezone || 'UTC';
+    
+    // Calculate baselineDeltaYears: baselineBiologicalAge - chronologicalAge
+    const baselineDeltaYears = roundTo2Decimals(
+      user.baselineBiologicalAgeYears - user.chronologicalAgeYears
+    );
+    
+    // Get all entries from onboarding to date
+    const allEntries = await listDailyEntries(userId);
+    
+    // Calculate totalDeltaYears: baselineDeltaYears + sum(all daily deltas)
+    const totalSummary = calculateTotalDeltaSummary(baselineDeltaYears, allEntries);
+    const totalDeltaYears = totalSummary.netDeltaYears;
+    
+    // Get current date in user's timezone
+    const now = DateTime.now().setZone(userTimezone);
+    
+    let response: DeltaAnalyticsResponse;
+    
+    if (range === 'weekly') {
+      // Get current week range (Monday to Sunday)
+      const weekRange = getWeekRange(now, userTimezone);
+      const dateRange = generateDateRange(weekRange.start, weekRange.end);
+      const entriesInRange = filterEntriesInRange(allEntries, weekRange.start, weekRange.end);
+      
+      const series = aggregateDeltasByDate(entriesInRange, dateRange);
+      const rangeSummary = calculateRangeDeltaSummary(entriesInRange);
+      
+      // Combine total summary with range summary
+      const summary: DeltaSummary = {
+        netDeltaYears: totalDeltaYears, // Total from baseline + all daily deltas
+        rejuvenationYears: totalSummary.rejuvenationYears,
+        agingYears: totalSummary.agingYears,
+        checkIns: rangeSummary.checkIns,
+        rangeNetDeltaYears: rangeSummary.rangeNetDeltaYears, // Only range delta
+      };
+      
+      response = {
+        range: 'weekly',
+        timezone: userTimezone,
+        baselineDeltaYears,
+        totalDeltaYears,
+        start: weekRange.start,
+        end: weekRange.end,
+        series,
+        summary,
+      };
+    } else if (range === 'monthly') {
+      // Get current month range
+      const monthRange = getMonthRange(now, userTimezone);
+      const dateRange = generateDateRange(monthRange.start, monthRange.end);
+      const entriesInRange = filterEntriesInRange(allEntries, monthRange.start, monthRange.end);
+      
+      const series = aggregateDeltasByDate(entriesInRange, dateRange);
+      const rangeSummary = calculateRangeDeltaSummary(entriesInRange);
+      
+      const summary: DeltaSummary = {
+        netDeltaYears: totalDeltaYears,
+        rejuvenationYears: totalSummary.rejuvenationYears,
+        agingYears: totalSummary.agingYears,
+        checkIns: rangeSummary.checkIns,
+        rangeNetDeltaYears: rangeSummary.rangeNetDeltaYears,
+      };
+      
+      response = {
+        range: 'monthly',
+        timezone: userTimezone,
+        baselineDeltaYears,
+        totalDeltaYears,
+        start: monthRange.start,
+        end: monthRange.end,
+        series,
+        summary,
+      };
+    } else {
+      // yearly
+      // Get current year range
+      const yearRange = getYearRange(now, userTimezone);
+      const monthRange = generateMonthRange(yearRange.start, yearRange.end);
+      const entriesInRange = filterEntriesInRange(allEntries, yearRange.start, yearRange.end);
+      
+      const series = aggregateDeltasByMonth(entriesInRange, monthRange);
+      const rangeSummary = calculateRangeDeltaSummary(entriesInRange);
+      
+      const summary: DeltaSummary = {
+        netDeltaYears: totalDeltaYears,
+        rejuvenationYears: totalSummary.rejuvenationYears,
+        agingYears: totalSummary.agingYears,
+        checkIns: rangeSummary.checkIns,
+        rangeNetDeltaYears: rangeSummary.rangeNetDeltaYears,
+      };
+      
+      response = {
+        range: 'yearly',
+        timezone: userTimezone,
+        baselineDeltaYears,
+        totalDeltaYears,
+        start: yearRange.start,
+        end: yearRange.end,
+        series,
+        summary,
+      };
+    }
+
+    // Log response structure for debugging
+    const responseForLog = {
+      range: response.range,
+      timezone: response.timezone,
+      baselineDeltaYears: response.baselineDeltaYears,
+      totalDeltaYears: response.totalDeltaYears,
+      start: response.start,
+      end: response.end,
+      seriesLength: range === 'yearly' 
+        ? (response as YearlyDeltaResponse).series.length
+        : (response as WeeklyDeltaResponse | MonthlyDeltaResponse).series.length,
+      seriesSample: range === 'yearly'
+        ? (response as YearlyDeltaResponse).series.slice(0, 2)
+        : (response as WeeklyDeltaResponse | MonthlyDeltaResponse).series.slice(0, 2),
+      summary: response.summary,
+    };
+
+    console.log('[analytics/delta] Response:', JSON.stringify(responseForLog, null, 2));
+
+    return res.json(response);
+  } catch (error: any) {
+    console.error('[analytics/delta] error:', error);
     return res.status(500).json({
       error: 'Internal server error',
       debug: process.env.NODE_ENV === 'development' ? String(error?.message ?? error) : undefined,

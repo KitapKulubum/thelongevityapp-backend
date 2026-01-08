@@ -133,3 +133,96 @@ export interface StatsSummaryResponse {
   hasCompletedOnboarding: boolean;
 }
 
+/**
+ * Trend data point for charts
+ */
+export interface TrendPoint {
+  date: string; // YYYY-MM-DD
+  biologicalAge: number;
+}
+
+/**
+ * Trend period data (weekly, monthly, yearly)
+ */
+export interface TrendPeriod {
+  value: number | null; // Change in biological age (rounded to 2 decimals)
+  available: boolean; // Whether enough data exists
+  projection?: boolean; // Whether this is a projection (only for yearly)
+  points?: TrendPoint[]; // Chart data points
+}
+
+/**
+ * Response for GET /api/longevity/trends
+ * 
+ * Example response:
+ * {
+ *   "weekly": { "value": -0.32, "available": true, "points": [...] },
+ *   "monthly": { "value": -1.10, "available": true, "points": [...] },
+ *   "yearly": { "value": -4.20, "available": false, "projection": true, "points": [...] }
+ * }
+ */
+export interface TrendResponse {
+  weekly: TrendPeriod;
+  monthly: TrendPeriod;
+  yearly: TrendPeriod;
+}
+
+/**
+ * Delta Analytics Response Models
+ */
+
+export interface DeltaSeriesPoint {
+  date: string; // YYYY-MM-DD for weekly/monthly
+  dailyDeltaYears: number | null; // Daily delta for that day (null if no check-in)
+}
+
+export interface MonthlyDeltaSeriesPoint {
+  month: string; // YYYY-MM format
+  netDelta: number; // Sum of deltas for that month
+  checkIns: number; // Count of check-ins in that month
+  avgDeltaPerCheckIn: number; // netDelta / checkIns
+}
+
+export interface DeltaSummary {
+  netDeltaYears: number; // baselineDeltaYears + sum(all daily deltas from onboarding to date)
+  rejuvenationYears: number; // sum(max(dailyDelta, 0)) - positive deltas (rejuvenation)
+  agingYears: number; // sum(abs(min(dailyDelta, 0))) - negative deltas (aging, as positive)
+  checkIns: number; // count of check-ins in range
+  rangeNetDeltaYears: number; // sum(daily deltas only in selected range)
+}
+
+export interface WeeklyDeltaResponse {
+  range: 'weekly';
+  timezone: string;
+  baselineDeltaYears: number; // baselineBiologicalAge - chronologicalAge
+  totalDeltaYears: number; // baselineDeltaYears + sum(all daily deltas from onboarding)
+  start: string; // YYYY-MM-DD (Monday)
+  end: string; // YYYY-MM-DD (Sunday)
+  series: DeltaSeriesPoint[];
+  summary: DeltaSummary;
+}
+
+export interface MonthlyDeltaResponse {
+  range: 'monthly';
+  timezone: string;
+  baselineDeltaYears: number; // baselineBiologicalAge - chronologicalAge
+  totalDeltaYears: number; // baselineDeltaYears + sum(all daily deltas from onboarding)
+  start: string; // YYYY-MM-DD (first day of month)
+  end: string; // YYYY-MM-DD (last day of month)
+  series: DeltaSeriesPoint[];
+  summary: DeltaSummary;
+}
+
+export interface YearlyDeltaResponse {
+  range: 'yearly';
+  timezone: string;
+  baselineDeltaYears: number; // baselineBiologicalAge - chronologicalAge
+  totalDeltaYears: number; // baselineDeltaYears + sum(all daily deltas from onboarding)
+  start: string; // YYYY-MM-DD (first day of year)
+  end: string; // YYYY-MM-DD (last day of year)
+  series: MonthlyDeltaSeriesPoint[];
+  summary: DeltaSummary;
+}
+
+export type DeltaAnalyticsResponse = WeeklyDeltaResponse | MonthlyDeltaResponse | YearlyDeltaResponse;
+
