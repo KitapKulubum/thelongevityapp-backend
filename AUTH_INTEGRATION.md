@@ -57,6 +57,9 @@
    result?.user.getIDToken { idToken, error in ... }
    ```
 3. Call POST `/api/auth/me` to fetch/create Firestore profile.
+4. **IMPORTANT**: Check `hasCompletedOnboarding` field in response:
+   - If `hasCompletedOnboarding: true` → Navigate to main app screen
+   - If `hasCompletedOnboarding: false` → Show onboarding questions
 
 ## Calling Protected Backend APIs
 For every longevity API call:
@@ -74,6 +77,23 @@ For every longevity API call:
 Backend middleware (`requireAuth`) verifies the token and sets `req.user.uid`, used as `userId`.
 
 ## Onboarding Flow
+
+### Check Onboarding Status
+**Before showing onboarding questions, always check `hasCompletedOnboarding` from `POST /api/auth/me` response:**
+
+```swift
+let authResponse = try await apiClient.post("/api/auth/me", body: { idToken })
+
+if authResponse.hasCompletedOnboarding == true {
+    // User already completed onboarding - skip to main screen
+    navigateToMainScreen()
+    return
+}
+
+// User needs to complete onboarding - show questions
+```
+
+### Submit Onboarding
 1. User is authenticated; profile exists (created during sign-up).
 2. Get `chronologicalAgeYears` from profile:
    - If profile was created with `dateOfBirth` during sign-up, use `profile.chronologicalAgeYears`
@@ -89,6 +109,7 @@ Backend middleware (`requireAuth`) verifies the token and sets `req.user.uid`, u
    - **Note**: `chronologicalAgeYears` should match the value from the profile (which was calculated from `dateOfBirth` during sign-up)
 4. Backend computes `totalScore`, `BAOYears = -totalScore * AGE_FACTOR`, sets baseline/current bio age, and updates `users/{uid}`.
 5. Use response (`baselineBiologicalAgeYears`, `currentBiologicalAgeYears`, `BAOYears`, `totalScore`) in UI.
+6. **After successful submission**: Call `POST /api/auth/me` again to get updated `hasCompletedOnboarding: true`, then navigate to main screen.
 
 ## Daily Check-in Flow
 1. User is authenticated and has token.

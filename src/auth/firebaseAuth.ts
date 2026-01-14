@@ -32,14 +32,15 @@ export async function verifyIdToken(idToken: string): Promise<admin.auth.Decoded
 }
 
 /**
- * Calculates chronological age in years from a date of birth (ISO date string).
+ * Calculates chronological age in years (with decimals) from a date of birth (ISO date string).
+ * Returns age in XX.XX format (e.g., 35.75 for 35 years and 9 months).
  * Returns null if dateOfBirth is invalid or missing.
  */
 export function calculateAgeFromDateOfBirth(dateOfBirth: string | null | undefined): number | null {
   if (!dateOfBirth) return null;
   
   try {
-    const birthDate = new Date(dateOfBirth);
+    const birthDate = new Date(dateOfBirth + 'T00:00:00');
     const today = new Date();
     
     // Check if date is valid
@@ -48,16 +49,16 @@ export function calculateAgeFromDateOfBirth(dateOfBirth: string | null | undefin
     // Check if birth date is not in the future
     if (birthDate > today) return null;
     
-    let age = today.getFullYear() - birthDate.getFullYear();
-    const monthDiff = today.getMonth() - birthDate.getMonth();
+    // Calculate age in milliseconds
+    const ageInMs = today.getTime() - birthDate.getTime();
     
-    // Adjust age if birthday hasn't occurred this year yet
-    if (monthDiff < 0 || (monthDiff === 0 && today.getDate() < birthDate.getDate())) {
-      age--;
-    }
+    // Convert to years with decimals
+    // Average year length: 365.25 days (accounting for leap years)
+    const msPerYear = 365.25 * 24 * 60 * 60 * 1000;
+    const ageInYears = ageInMs / msPerYear;
     
-    // Ensure age is non-negative
-    return Math.max(0, age);
+    // Round to 2 decimal places and ensure non-negative
+    return Math.max(0, Math.round(ageInYears * 100) / 100);
   } catch (error) {
     console.error('[calculateAgeFromDateOfBirth] error:', error);
     return null;
@@ -127,19 +128,16 @@ export async function getOrCreateUserProfile(
   let chronologicalAgeYears = existingProfile.chronologicalAgeYears;
   
   if (dateOfBirthToUse) {
+    // Always recalculate from dateOfBirth to keep age current (updates continuously)
     const calculatedAge = calculateAgeFromDateOfBirth(dateOfBirthToUse);
     if (calculatedAge !== null) {
       chronologicalAgeYears = calculatedAge;
+      // Always update if age has changed (to ensure continuous updates)
+      if (existingProfile.chronologicalAgeYears === null || 
+          existingProfile.chronologicalAgeYears === undefined ||
+          calculatedAge !== existingProfile.chronologicalAgeYears) {
       updates.chronologicalAgeYears = calculatedAge;
     }
-  } else if (existingProfile.dateOfBirth) {
-    // Recalculate from existing dateOfBirth if stored age is outdated
-    const calculatedAge = calculateAgeFromDateOfBirth(existingProfile.dateOfBirth);
-    if (calculatedAge !== null && 
-        (existingProfile.chronologicalAgeYears === null || 
-         Math.abs(calculatedAge - (existingProfile.chronologicalAgeYears || 0)) > 1)) {
-      chronologicalAgeYears = calculatedAge;
-      updates.chronologicalAgeYears = calculatedAge;
     }
   }
   
