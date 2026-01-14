@@ -43,6 +43,7 @@ export interface UserDocument {
   dateOfBirth?: string | null; // ISO date string, e.g. "1990-05-15"
   timezone?: string | null; // IANA timezone string, e.g. "Europe/Istanbul", "America/New_York"
   chronologicalAgeYears: number;
+  chronologicalAgeYearsAtOnboarding?: number | null; // Chronological age at the time of onboarding (for baseline delta calculation)
   onboardingAnswers: OnboardingAnswers;
   onboardingTotalScore: number;
   baselineBiologicalAgeYears: number;
@@ -53,6 +54,14 @@ export interface UserDocument {
   accelerationStreakDays: number;
   totalRejuvenationDays: number;
   totalAccelerationDays: number;
+  // Subscription fields
+  subscriptionStatus?: 'active' | 'expired' | null;
+  subscriptionPlan?: 'membership_monthly' | 'membership_yearly' | null;
+  subscriptionRenewalDate?: string | null; // ISO date string
+  subscriptionOriginalTransactionId?: string | null; // Apple original transaction ID
+  // Streak tracking fields
+  lastCheckinDayKey?: string | null; // YYYY-MM-DD in user's timezone
+  lastCheckinAt?: string | null; // ISO timestamp
   createdAt: string;
   updatedAt: string;
 }

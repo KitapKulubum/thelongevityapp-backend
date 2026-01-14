@@ -14,8 +14,8 @@ export async function generateAgeMessage(
   const lastEntry = state.history.length > 0 ? state.history[state.history.length - 1] : null;
 
   const summary = `
-Chronological age: ${state.chronologicalAgeYears.toFixed(1)}
-Current biological age: ${state.currentBiologicalAgeYears.toFixed(2)}
+Chronological age: ${state.chronologicalAgeYears.toFixed(2)} years
+Current biological age: ${state.currentBiologicalAgeYears.toFixed(2)} years
 Aging debt: ${state.agingDebtYears.toFixed(2)} years
 Rejuvenation streak: ${state.rejuvenationStreakDays} days
 Acceleration streak: ${state.accelerationStreakDays} days

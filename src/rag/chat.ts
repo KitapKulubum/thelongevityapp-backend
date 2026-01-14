@@ -46,8 +46,9 @@ export async function longevityChat(options: {
     // Build age summary from Firestore data
     let ageSummary = 'No biological age data yet.';
     if (userDoc) {
+      // Use toFixed(2) for chronological age to match score screen (2 decimal places)
       ageSummary = `
-Chronological age: ${userDoc.chronologicalAgeYears.toFixed(1)} years
+Chronological age: ${userDoc.chronologicalAgeYears.toFixed(2)} years
 Current biological age: ${userDoc.currentBiologicalAgeYears.toFixed(2)} years
 Baseline biological age: ${userDoc.baselineBiologicalAgeYears.toFixed(2)} years
 Aging debt: ${userDoc.currentAgingDebtYears.toFixed(2)} years (${userDoc.currentAgingDebtYears > 0 ? 'aging faster' : userDoc.currentAgingDebtYears < 0 ? 'aging slower' : 'normal aging'})

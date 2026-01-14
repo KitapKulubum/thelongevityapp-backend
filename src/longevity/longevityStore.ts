@@ -5,6 +5,7 @@
 import * as admin from 'firebase-admin';
 import { DateTime } from 'luxon';
 import { firestore, firestoreToJSON } from '../config/firestore';
+import { calculateAgeFromDateOfBirth } from '../auth/firebaseAuth';
 import {
   DailyEntryDocument,
   DailyMetrics,
@@ -70,6 +71,7 @@ export async function upsertUserOnboarding(params: {
     {
       userId,
       chronologicalAgeYears,
+      chronologicalAgeYearsAtOnboarding: chronologicalAgeYears, // Store chronological age at onboarding time
       onboardingAnswers: answers,
       onboardingTotalScore,
       baselineBiologicalAgeYears,
@@ -89,11 +91,37 @@ export async function upsertUserOnboarding(params: {
 
 /**
  * Fetch user root doc.
+ * Automatically updates chronologicalAgeYears from dateOfBirth if available.
  */
 export async function getUserDocument(userId: string): Promise<UserDocument | null> {
   const doc = await firestore.collection('users').doc(userId).get();
   if (!doc.exists) return null;
-  return firestoreToJSON(doc.data()) as UserDocument;
+  
+  const userData = firestoreToJSON(doc.data()) as UserDocument;
+  
+  // If dateOfBirth exists, automatically recalculate chronologicalAgeYears
+  // This ensures age stays current as days pass (updates continuously)
+  if (userData.dateOfBirth) {
+    const calculatedAge = calculateAgeFromDateOfBirth(userData.dateOfBirth);
+    
+    if (calculatedAge !== null) {
+      // Always update chronological age to ensure it increases continuously
+      // Only skip update if the calculated age is exactly the same (to avoid unnecessary writes)
+      if (userData.chronologicalAgeYears === null || 
+          userData.chronologicalAgeYears === undefined ||
+          calculatedAge !== userData.chronologicalAgeYears) {
+        // Update in Firestore
+        await doc.ref.update({
+          chronologicalAgeYears: calculatedAge,
+          updatedAt: serverTimestamp(),
+        });
+        // Update local data
+        userData.chronologicalAgeYears = calculatedAge;
+      }
+    }
+  }
+  
+  return userData;
 }
 
 /**
@@ -237,16 +265,25 @@ export async function updateUserAfterDaily(
     accelerationStreakDays: number;
     totalRejuvenationDays: number;
     totalAccelerationDays: number;
+    lastCheckinDayKey?: string;
+    lastCheckinAt?: string;
   }
 ): Promise<void> {
   const userRef = firestore.collection('users').doc(userId);
-  await userRef.set(
-    {
+  const updates: any = {
       ...state,
       updatedAt: serverTimestamp(),
-    },
-    { merge: true }
-  );
+  };
+
+  // Only update lastCheckinDayKey and lastCheckinAt if provided
+  if (state.lastCheckinDayKey !== undefined) {
+    updates.lastCheckinDayKey = state.lastCheckinDayKey;
+  }
+  if (state.lastCheckinAt !== undefined) {
+    updates.lastCheckinAt = state.lastCheckinAt;
+  }
+
+  await userRef.set(updates, { merge: true });
 }
 
 /**

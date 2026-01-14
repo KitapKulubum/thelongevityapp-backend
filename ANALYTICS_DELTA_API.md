@@ -17,23 +17,25 @@
 {
   "range": "weekly",
   "timezone": "Europe/Istanbul",
+  "baselineDeltaYears": -2.21,
+  "totalDeltaYears": -2.30,
   "start": "2026-01-05",
   "end": "2026-01-11",
   "series": [
-    { "date": "2026-01-05", "delta": 0.4 },
-    { "date": "2026-01-06", "delta": null },
-    { "date": "2026-01-07", "delta": -0.2 },
-    { "date": "2026-01-08", "delta": 0.3 },
-    { "date": "2026-01-09", "delta": null },
-    { "date": "2026-01-10", "delta": 0.5 },
-    { "date": "2026-01-11", "delta": 0.1 }
+    { "date": "2026-01-05", "dailyDeltaYears": 0.4 },
+    { "date": "2026-01-06", "dailyDeltaYears": null },
+    { "date": "2026-01-07", "dailyDeltaYears": -0.2 },
+    { "date": "2026-01-08", "dailyDeltaYears": 0.3 },
+    { "date": "2026-01-09", "dailyDeltaYears": null },
+    { "date": "2026-01-10", "dailyDeltaYears": 0.5 },
+    { "date": "2026-01-11", "dailyDeltaYears": 0.1 }
   ],
   "summary": {
-    "netDelta": 1.2,
-    "rejuvenation": 1.3,
-    "aging": 0.2,
-    "checkIns": 5,
-    "avgDeltaPerCheckIn": 0.24
+    "netDeltaYears": -2.30,
+    "rejuvenationYears": 2.35,
+    "agingYears": 0.05,
+    "checkIns": 12,
+    "rangeNetDeltaYears": 1.1
   }
 }
 ```
@@ -41,8 +43,12 @@
 **Notes:**
 - Week starts on Monday and ends on Sunday
 - `series` contains all 7 days of the week
-- Missing days (no check-in) have `delta: null`
+- Missing days (no check-in) have `dailyDeltaYears: null`
 - If multiple check-ins on same day, deltas are summed
+- `baselineDeltaYears`: Baseline delta from onboarding (baselineBiologicalAge - chronologicalAge)
+- `totalDeltaYears`: Total delta including baseline + all daily deltas from onboarding to date
+- `summary.netDeltaYears`: Total including baseline + all daily deltas (use this for UI display)
+- `summary.rangeNetDeltaYears`: Only the delta sum within the selected range (for reference)
 
 ### Monthly Response
 
@@ -50,28 +56,34 @@
 {
   "range": "monthly",
   "timezone": "Europe/Istanbul",
+  "baselineDeltaYears": -2.21,
+  "totalDeltaYears": -2.30,
   "start": "2026-01-01",
   "end": "2026-01-31",
   "series": [
-    { "date": "2026-01-01", "delta": 0.4 },
-    { "date": "2026-01-02", "delta": null },
-    { "date": "2026-01-03", "delta": -0.2 },
+    { "date": "2026-01-01", "dailyDeltaYears": 0.4 },
+    { "date": "2026-01-02", "dailyDeltaYears": null },
+    { "date": "2026-01-03", "dailyDeltaYears": -0.2 },
     ...
-    { "date": "2026-01-31", "delta": 0.3 }
+    { "date": "2026-01-31", "dailyDeltaYears": 0.3 }
   ],
   "summary": {
-    "netDelta": 8.6,
-    "rejuvenation": 12.0,
-    "aging": 3.4,
+    "netDeltaYears": -2.30,
+    "rejuvenationYears": 12.0,
+    "agingYears": 3.4,
     "checkIns": 18,
-    "avgDeltaPerCheckIn": 0.48
+    "rangeNetDeltaYears": 8.6
   }
 }
 ```
 
 **Notes:**
 - `series` contains all days of the month (28-31 days depending on month)
-- Missing days have `delta: null`
+- Missing days have `dailyDeltaYears: null`
+- `baselineDeltaYears`: Baseline delta from onboarding
+- `totalDeltaYears`: Total delta including baseline + all daily deltas
+- `summary.netDeltaYears`: Total including baseline + all daily deltas (use this for UI display)
+- `summary.rangeNetDeltaYears`: Only the delta sum within the selected range (for reference)
 
 ### Yearly Response
 
@@ -79,6 +91,8 @@
 {
   "range": "yearly",
   "timezone": "Europe/Istanbul",
+  "baselineDeltaYears": -2.21,
+  "totalDeltaYears": -2.30,
   "start": "2026-01-01",
   "end": "2026-12-31",
   "series": [
@@ -88,11 +102,11 @@
     { "month": "2026-12", "netDelta": 0.5, "checkIns": 15, "avgDeltaPerCheckIn": 0.03 }
   ],
   "summary": {
-    "netDelta": 8.6,
-    "rejuvenation": 19.0,
-    "aging": 10.4,
+    "netDeltaYears": -2.30,
+    "rejuvenationYears": 19.0,
+    "agingYears": 10.4,
     "checkIns": 210,
-    "avgDeltaPerCheckIn": 0.04
+    "rangeNetDeltaYears": 8.6
   }
 }
 ```
@@ -100,6 +114,10 @@
 **Notes:**
 - `series` contains all 12 months of the year
 - Each month shows aggregated `netDelta`, `checkIns`, and `avgDeltaPerCheckIn`
+- `baselineDeltaYears`: Baseline delta from onboarding
+- `totalDeltaYears`: Total delta including baseline + all daily deltas
+- `summary.netDeltaYears`: Total including baseline + all daily deltas (use this for UI display)
+- `summary.rangeNetDeltaYears`: Only the delta sum within the selected range (for reference)
 
 ## Delta Value Definition
 
@@ -114,11 +132,13 @@ This matches the user-facing definition where positive values indicate improveme
 
 All summary fields are calculated as follows:
 
-- **netDelta**: `sum(delta)` - Sum of all deltas in the range
-- **rejuvenation**: `sum(max(delta, 0))` - Sum of positive deltas (rejuvenation days)
-- **aging**: `sum(abs(min(delta, 0)))` - Sum of absolute values of negative deltas (aging days)
-- **checkIns**: `count(entries in range)` - Number of check-ins in the range
-- **avgDeltaPerCheckIn**: `netDelta / checkIns` (or 0 if checkIns = 0)
+- **netDeltaYears**: `baselineDeltaYears + sum(all daily deltas from onboarding to date)` - Total including baseline (use this for UI display)
+- **rejuvenationYears**: `sum(max(dailyDeltaYears, 0))` - Sum of positive daily deltas (rejuvenation days)
+- **agingYears**: `sum(abs(min(dailyDeltaYears, 0)))` - Sum of absolute values of negative daily deltas (aging days)
+- **checkIns**: `count(entries in range)` - Number of check-ins in the selected range
+- **rangeNetDeltaYears**: `sum(dailyDeltaYears in range)` - Sum of daily deltas only within the selected range (for reference)
+
+**Important:** The `netDeltaYears` field includes the baseline delta from onboarding, so it represents the total delta from the start. This ensures consistency with the badge showing "Rejuvenation: -2.21y" which matches `baselineDeltaYears`.
 
 ## Timezone Handling
 
@@ -131,8 +151,9 @@ All summary fields are calculated as follows:
 ## Data Aggregation Rules
 
 1. **Daily aggregation**: If multiple check-ins occur on the same day, their deltas are summed
-2. **Missing days**: Days without check-ins have `delta: null` in the series
+2. **Missing days**: Days without check-ins have `dailyDeltaYears: null` in the series
 3. **Month aggregation**: For yearly view, all check-ins in a month are aggregated by summing deltas
+4. **Baseline integration**: All responses include `baselineDeltaYears` (from onboarding) and `totalDeltaYears` (baseline + all daily deltas)
 
 ## Example Usage
 
