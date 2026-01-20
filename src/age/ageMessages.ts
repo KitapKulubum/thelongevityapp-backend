@@ -18,7 +18,6 @@ Chronological age: ${state.chronologicalAgeYears.toFixed(2)} years
 Current biological age: ${state.currentBiologicalAgeYears.toFixed(2)} years
 Aging debt: ${state.agingDebtYears.toFixed(2)} years
 Rejuvenation streak: ${state.rejuvenationStreakDays} days
-Acceleration streak: ${state.accelerationStreakDays} days
 Last daily change: ${lastEntry ? lastEntry.deltaYears.toFixed(3) : 'N/A'} years
 Last change reasons: ${lastEntry ? lastEntry.reasons.join(', ') : 'N/A'}
 `;

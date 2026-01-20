@@ -51,6 +51,8 @@ import {
   TrendResponse,
   TrendPeriod,
   TrendPoint,
+  MetricScores,
+  MetricsScoresResponse,
 } from './longevity/longevityModel';
 import { requireAuth, requireEmailVerification, requireSubscription, AuthenticatedRequest } from './auth/authMiddleware';
 import { verifyIdToken, getOrCreateUserProfile, calculateAgeFromDateOfBirth } from './auth/firebaseAuth';
@@ -61,6 +63,7 @@ import {
   verifyPasswordResetOTP,
   confirmPasswordReset,
 } from './auth/passwordReset';
+import { sendVerificationEmail } from './auth/emailService';
 import { validatePassword } from './auth/passwordValidation';
 import { getPrivacyPolicy, getTermsOfService } from './legal/documents';
 import { recordConsent, getConsentRecord, needsConsentUpdate } from './legal/consentTracking';
@@ -218,6 +221,7 @@ app.post('/api/auth/me', async (req, res) => {
     return res.json({
       uid: decoded.uid,
       email: decoded.email ?? null,
+      emailVerified: decoded.email_verified ?? false,
       profile,
       hasCompletedOnboarding: completedOnboarding,
       consentNeedsUpdate,
@@ -407,6 +411,97 @@ app.patch('/api/auth/email', requireAuth, requireEmailVerification, async (req: 
 });
 
 /**
+ * POST /api/auth/send-verification-email
+ * Send email verification link to user's email address.
+ * Requires: authentication
+ * Response: 200 { success: true, message: "Verification email sent" }
+ */
+app.post('/api/auth/send-verification-email', requireAuth, async (req: AuthenticatedRequest, res) => {
+  try {
+    const userId = req.user!.uid;
+    const userEmail = req.user!.email;
+
+    if (!userEmail) {
+      return res.status(400).json({ error: 'User email not found' });
+    }
+
+    // Check if email is already verified
+    const idToken = req.headers.authorization?.replace('Bearer ', '').trim();
+    if (idToken) {
+      const decoded = await verifyIdToken(idToken);
+      if (decoded.email_verified) {
+        return res.status(400).json({ 
+          error: 'email_already_verified',
+          message: 'Email is already verified.' 
+        });
+      }
+    }
+
+    // Generate email verification link using Firebase Admin SDK
+    const actionCodeSettings = {
+      url: process.env.EMAIL_VERIFICATION_REDIRECT_URL || 'https://thelongevityapp.ai/email-verified',
+      handleCodeInApp: false, // Open link in browser, not app
+    };
+
+    const link = await admin.auth().generateEmailVerificationLink(userEmail, actionCodeSettings);
+
+    // Send email using emailService
+    await sendVerificationEmail(userEmail, link);
+
+    return res.json({
+      success: true,
+      message: 'Verification email sent. Please check your inbox.',
+    });
+  } catch (error: any) {
+    console.error('[auth/send-verification-email] error:', error);
+    
+    if (error.code === 'auth/user-not-found') {
+      return res.status(404).json({ error: 'User not found' });
+    }
+    
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+/**
+ * POST /api/auth/bypassverify
+ * Bypass email verification for testing purposes.
+ * Sets emailVerified to true for the authenticated user.
+ * Requires: authentication
+ * Response: 200 { success: true, message: "Email verification bypassed" }
+ */
+app.post('/api/auth/bypassverify', requireAuth, async (req: AuthenticatedRequest, res) => {
+  try {
+    const userId = req.user!.uid;
+    const userEmail = req.user!.email;
+
+    if (!userEmail) {
+      return res.status(400).json({ error: 'User email not found' });
+    }
+
+    // Update user's email verification status to true
+    await admin.auth().updateUser(userId, {
+      emailVerified: true,
+    });
+
+    console.log(`[auth/bypassverify] Email verification bypassed for user ${userId} (${userEmail})`);
+
+    return res.json({
+      success: true,
+      message: 'Email verification bypassed successfully.',
+    });
+  } catch (error: any) {
+    console.error('[auth/bypassverify] error:', error);
+    
+    if (error.code === 'auth/user-not-found') {
+      return res.status(404).json({ error: 'User not found' });
+    }
+    
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+/**
  * PATCH /api/auth/password
  * Change user's password.
  * Requires: email verification (sensitive action)
@@ -479,36 +574,111 @@ app.patch('/api/auth/password', requireAuth, requireEmailVerification, async (re
  * DELETE /api/auth/account
  * Delete user account permanently.
  * Requires: email verification (sensitive action)
- * Response: 200 { success: true }
+ * This endpoint deletes:
+ * - User from Firebase Auth
+ * - User document from Firestore
+ * - All daily entries (dailyEntries subcollection)
+ * - All chat history (chatHistory subcollection)
+ * - All other user-related data
+ * Response: 200 { success: true, message: string }
  */
 app.delete('/api/auth/account', requireAuth, requireEmailVerification, async (req: AuthenticatedRequest, res) => {
   try {
     const userId = req.user!.uid;
 
-    // Delete user from Firebase Auth
+    // Delete all subcollections first (before deleting user document)
+    const userRef = firestore.collection('users').doc(userId);
+    
+    // Helper function to delete subcollection in batches (Firestore batch limit is 500)
+    const deleteSubcollection = async (collectionRef: admin.firestore.CollectionReference, collectionName: string) => {
+      const BATCH_SIZE = 500;
+      let totalDeleted = 0;
+      let lastDoc: admin.firestore.QueryDocumentSnapshot | null = null;
+      
+      while (true) {
+        let query: admin.firestore.Query = collectionRef.limit(BATCH_SIZE);
+        if (lastDoc) {
+          query = query.startAfter(lastDoc);
+        }
+        
+        const snapshot = await query.get();
+        if (snapshot.empty) break;
+        
+        const batch = firestore.batch();
+        snapshot.docs.forEach((doc) => {
+          batch.delete(doc.ref);
+        });
+        
+        await batch.commit();
+        totalDeleted += snapshot.docs.length;
+        lastDoc = snapshot.docs[snapshot.docs.length - 1];
+        
+        // If we got fewer than BATCH_SIZE, we're done
+        if (snapshot.docs.length < BATCH_SIZE) break;
+      }
+      
+      return totalDeleted;
+    };
+    
+    // Delete dailyEntries subcollection
     try {
-      await admin.auth().deleteUser(userId);
+      const dailyEntriesRef = userRef.collection('dailyEntries');
+      const deletedCount = await deleteSubcollection(dailyEntriesRef, 'dailyEntries');
+      if (deletedCount > 0) {
+        console.log(`[auth/account] Deleted ${deletedCount} daily entries for user: ${userId}`);
+      }
     } catch (error: any) {
-      console.error('[auth/account] Failed to delete user from Firebase Auth:', error);
-      throw error;
+      console.error('[auth/account] Failed to delete daily entries:', error);
+      // Continue with deletion even if subcollection deletion fails
+    }
+
+    // Delete chatHistory subcollection
+    try {
+      const chatHistoryRef = userRef.collection('chatHistory');
+      const deletedCount = await deleteSubcollection(chatHistoryRef, 'chatHistory');
+      if (deletedCount > 0) {
+        console.log(`[auth/account] Deleted ${deletedCount} chat messages for user: ${userId}`);
+      }
+    } catch (error: any) {
+      console.error('[auth/account] Failed to delete chat history:', error);
+      // Continue with deletion even if subcollection deletion fails
     }
 
     // Delete user document from Firestore
-    // Note: This will cascade delete related data if Firestore rules are configured
     try {
-      await firestore.collection('users').doc(userId).delete();
+      await userRef.delete();
+      console.log(`[auth/account] Deleted user document for user: ${userId}`);
     } catch (error: any) {
       console.error('[auth/account] Failed to delete user document:', error);
-      // Continue even if Firestore delete fails - user is already deleted from Auth
+      // Continue even if Firestore delete fails - we'll still try to delete from Auth
+    }
+
+    // Delete user from Firebase Auth (this should be last, as it invalidates the token)
+    try {
+      await admin.auth().deleteUser(userId);
+      console.log(`[auth/account] Deleted user from Firebase Auth: ${userId}`);
+    } catch (error: any) {
+      console.error('[auth/account] Failed to delete user from Firebase Auth:', error);
+      // If Auth deletion fails, we've still deleted Firestore data
+      // Return success but log the error
+      if (error.code === 'auth/user-not-found') {
+        // User already deleted from Auth, that's fine
+        console.log(`[auth/account] User already deleted from Firebase Auth: ${userId}`);
+      } else {
+        throw error;
+      }
     }
 
     return res.json({
       success: true,
-      message: 'Account deleted successfully.',
+      message: 'Account deleted successfully. All your data has been permanently removed.',
     });
   } catch (error: any) {
     console.error('[auth/account] error:', error);
-    return res.status(500).json({ error: 'Internal server error' });
+    return res.status(500).json({ 
+      error: 'Internal server error',
+      message: 'Failed to delete account. Please try again or contact support.',
+    });
   }
 });
 
@@ -716,29 +886,29 @@ app.post('/api/age/daily-update', requireAuth, requireSubscription, async (req: 
         actualDeltaYears,
       });
     } else {
-      // First entry: delta is 0 (no previous entry to compare)
-      actualDeltaYears = 0;
-      console.log('[daily-update] First entry, delta set to 0');
+      // First entry: calculate delta from baseline to current biological age
+      actualDeltaYears = Math.round((currentBiologicalAgeYears - baselineBiologicalAgeYears) * 100) / 100;
+      console.log('[daily-update] First entry, delta calculated from baseline:', {
+        baselineBioAge: baselineBiologicalAgeYears,
+        currentBioAge: currentBiologicalAgeYears,
+        actualDeltaYears,
+      });
     }
 
     // Calculate streaks using helper functions (calendar-day based)
     // Get current streak values
     let currentRejuvenationStreak = user.rejuvenationStreakDays ?? 0;
-    let currentAccelerationStreak = user.accelerationStreakDays ?? 0;
     let totalRejuvenationDays = user.totalRejuvenationDays ?? 0;
-    let totalAccelerationDays = user.totalAccelerationDays ?? 0;
 
     // Calculate new streaks based on consecutive days
     // Use helper function to determine if this is a consecutive day
     let rejuvenationStreakDays: number;
-    let accelerationStreakDays: number;
 
     // Check if same day (should not happen due to duplicate check, but handle safely)
     if (lastCheckinDayKey === todayDateKey) {
-      // Same day: keep streaks unchanged
+      // Same day: keep streak unchanged
       rejuvenationStreakDays = currentRejuvenationStreak;
-      accelerationStreakDays = currentAccelerationStreak;
-      console.log('[daily-update] Same day check-in detected, streaks unchanged');
+      console.log('[daily-update] Same day check-in detected, streak unchanged');
       } else {
       // Calculate days difference
       let daysDiff: number;
@@ -761,38 +931,26 @@ app.post('/api/age/daily-update', requireAuth, requireSubscription, async (req: 
       });
 
       // Apply streak rules based on consecutive days and delta
+      // Only rejuvenation streak is tracked (positive delta or neutral delta resets streak)
       if (daysDiff === 1) {
-        // Consecutive day (yesterday): increment appropriate streak
-      if (actualDeltaYears <= -threshold) {
-          // Rejuvenation: increment rejuvenation streak, reset acceleration
+        // Consecutive day (yesterday): increment streak if rejuvenation
+        if (actualDeltaYears <= -threshold) {
+          // Rejuvenation: increment rejuvenation streak
           rejuvenationStreakDays = currentRejuvenationStreak + 1;
-        accelerationStreakDays = 0;
-        totalRejuvenationDays += 1;
-      } else if (actualDeltaYears >= threshold) {
-          // Acceleration: increment acceleration streak, reset rejuvenation
-          accelerationStreakDays = currentAccelerationStreak + 1;
-        rejuvenationStreakDays = 0;
-        totalAccelerationDays += 1;
+          totalRejuvenationDays += 1;
+        } else {
+          // Acceleration or neutral: reset streak
+          rejuvenationStreakDays = 0;
+        }
       } else {
-        // No significant delta: reset both streaks to 0
-        rejuvenationStreakDays = 0;
-        accelerationStreakDays = 0;
-      }
-      } else {
-        // Gap (2+ days) or first check-in: reset streaks
-      if (actualDeltaYears <= -threshold) {
+        // Gap (2+ days) or first check-in: reset or start streak
+        if (actualDeltaYears <= -threshold) {
           rejuvenationStreakDays = 1;
-        accelerationStreakDays = 0;
-        totalRejuvenationDays += 1;
-      } else if (actualDeltaYears >= threshold) {
-          accelerationStreakDays = 1;
-        rejuvenationStreakDays = 0;
-        totalAccelerationDays += 1;
-      } else {
-        // No significant delta: reset both streaks to 0
-        rejuvenationStreakDays = 0;
-        accelerationStreakDays = 0;
-      }
+          totalRejuvenationDays += 1;
+        } else {
+          // Acceleration or neutral: no streak
+          rejuvenationStreakDays = 0;
+        }
       }
     }
 
@@ -827,29 +985,17 @@ app.post('/api/age/daily-update', requireAuth, requireSubscription, async (req: 
           // Consecutive day
           if (actualDeltaYears <= -threshold) {
             rejuvenationStreakDays = (userData?.rejuvenationStreakDays ?? 0) + 1;
-            accelerationStreakDays = 0;
             totalRejuvenationDays = (userData?.totalRejuvenationDays ?? 0) + 1;
-          } else if (actualDeltaYears >= threshold) {
-            accelerationStreakDays = (userData?.accelerationStreakDays ?? 0) + 1;
-            rejuvenationStreakDays = 0;
-            totalAccelerationDays = (userData?.totalAccelerationDays ?? 0) + 1;
           } else {
             rejuvenationStreakDays = 0;
-            accelerationStreakDays = 0;
           }
         } else {
           // Gap or first check-in
           if (actualDeltaYears <= -threshold) {
             rejuvenationStreakDays = 1;
-            accelerationStreakDays = 0;
             totalRejuvenationDays = (userData?.totalRejuvenationDays ?? 0) + 1;
-          } else if (actualDeltaYears >= threshold) {
-            accelerationStreakDays = 1;
-            rejuvenationStreakDays = 0;
-            totalAccelerationDays = (userData?.totalAccelerationDays ?? 0) + 1;
           } else {
             rejuvenationStreakDays = 0;
-            accelerationStreakDays = 0;
           }
         }
       }
@@ -874,7 +1020,6 @@ app.post('/api/age/daily-update', requireAuth, requireSubscription, async (req: 
         currentBiologicalAgeYears,
         currentAgingDebtYears,
         rejuvenationStreakDays,
-        accelerationStreakDays,
         createdAt: admin.firestore.FieldValue.serverTimestamp(),
         updatedAt: admin.firestore.FieldValue.serverTimestamp(),
       };
@@ -886,9 +1031,7 @@ app.post('/api/age/daily-update', requireAuth, requireSubscription, async (req: 
       currentBiologicalAgeYears,
       currentAgingDebtYears,
       rejuvenationStreakDays,
-      accelerationStreakDays,
       totalRejuvenationDays,
-      totalAccelerationDays,
         lastCheckinDayKey: todayDateKey,
         lastCheckinAt: now,
         updatedAt: admin.firestore.FieldValue.serverTimestamp(),
@@ -901,9 +1044,7 @@ app.post('/api/age/daily-update', requireAuth, requireSubscription, async (req: 
       currentBiologicalAgeYears,
       agingDebtYears: currentAgingDebtYears,
       rejuvenationStreakDays,
-      accelerationStreakDays,
       totalRejuvenationDays,
-      totalAccelerationDays,
     };
 
     const today: TodayEntry = {
@@ -964,9 +1105,7 @@ app.get('/api/age/state/:userId', requireAuth, requireSubscription, async (req: 
         currentBiologicalAgeYears: user.currentBiologicalAgeYears,
         agingDebtYears: user.currentAgingDebtYears,
         rejuvenationStreakDays: user.rejuvenationStreakDays,
-        accelerationStreakDays: user.accelerationStreakDays,
         totalRejuvenationDays: user.totalRejuvenationDays,
-        totalAccelerationDays: user.totalAccelerationDays,
       },
     });
   } catch (error: any) {
@@ -1185,13 +1324,11 @@ app.get('/api/age/trend/:userId', requireAuth, requireSubscription, async (req: 
     return res.json({
       range,
       points: allPoints,
-      summary: {
+        summary: {
         currentBiologicalAgeYears: user.currentBiologicalAgeYears,
         agingDebtYears: user.currentAgingDebtYears,
         rejuvenationStreakDays: user.rejuvenationStreakDays,
-        accelerationStreakDays: user.accelerationStreakDays,
         totalRejuvenationDays: user.totalRejuvenationDays,
-        totalAccelerationDays: user.totalAccelerationDays,
       },
     });
   } catch (error: any) {
@@ -1364,9 +1501,7 @@ app.get('/api/stats/summary', requireAuth, requireSubscription, async (req: Auth
       currentBiologicalAgeYears,
       agingDebtYears: currentBiologicalAgeYears - user.chronologicalAgeYears,
       rejuvenationStreakDays: user.rejuvenationStreakDays ?? 0,
-      accelerationStreakDays: user.accelerationStreakDays ?? 0,
       totalRejuvenationDays: user.totalRejuvenationDays ?? 0,
-      totalAccelerationDays: user.totalAccelerationDays ?? 0,
     };
 
     // Get today's dateKey in user's timezone
@@ -1462,6 +1597,263 @@ app.get('/api/stats/summary', requireAuth, requireSubscription, async (req: Auth
  */
 function roundTo2Decimals(value: number): number {
   return Math.round(value * 100) / 100;
+}
+
+/**
+ * Calculate 0-100 score for sleep hours
+ * Optimal: 7-9 hours = 100
+ * 6-7 or 9-10 = 70
+ * <6 or >10 = 30
+ */
+function calculateSleepHoursScore(sleepHours: number): number {
+  if (sleepHours >= 7 && sleepHours <= 9) {
+    return 100;
+  } else if ((sleepHours >= 6 && sleepHours < 7) || (sleepHours > 9 && sleepHours <= 10)) {
+    return 70;
+  } else if (sleepHours < 6) {
+    // Less than 6 hours: linear from 0-6
+    return Math.max(0, Math.min(30, (sleepHours / 6) * 30));
+  } else {
+    // More than 10 hours: linear from 10-12
+    return Math.max(0, Math.min(30, ((12 - sleepHours) / 2) * 30));
+  }
+}
+
+/**
+ * Calculate 0-100 score for steps
+ * 10000+ = 100
+ * 7000-9999 = 80
+ * 5000-6999 = 60
+ * 3000-4999 = 40
+ * <3000 = 20
+ */
+function calculateStepsScore(steps: number): number {
+  if (steps >= 10000) {
+    return 100;
+  } else if (steps >= 7000) {
+    return 80;
+  } else if (steps >= 5000) {
+    return 60;
+  } else if (steps >= 3000) {
+    return 40;
+  } else {
+    return Math.max(0, Math.min(20, (steps / 3000) * 20));
+  }
+}
+
+/**
+ * Calculate 0-100 score for vigorous minutes
+ * 30+ = 100
+ * 20-29 = 80
+ * 10-19 = 60
+ * 5-9 = 40
+ * <5 = 20
+ */
+function calculateVigorousMinutesScore(minutes: number): number {
+  if (minutes >= 30) {
+    return 100;
+  } else if (minutes >= 20) {
+    return 80;
+  } else if (minutes >= 10) {
+    return 60;
+  } else if (minutes >= 5) {
+    return 40;
+  } else {
+    return Math.max(0, Math.min(20, (minutes / 5) * 20));
+  }
+}
+
+/**
+ * Calculate 0-100 score for processed food (1-5 scale, lower is better)
+ * 1 = 100
+ * 2 = 80
+ * 3 = 50
+ * 4 = 20
+ * 5 = 0
+ */
+function calculateProcessedFoodScore(processedFoodScore: number): number {
+  if (processedFoodScore <= 1) {
+    return 100;
+  } else if (processedFoodScore <= 2) {
+    return 80;
+  } else if (processedFoodScore <= 3) {
+    return 50;
+  } else if (processedFoodScore <= 4) {
+    return 20;
+  } else {
+    return 0;
+  }
+}
+
+/**
+ * Calculate 0-100 score for alcohol units
+ * 0 = 100
+ * 1 = 80
+ * 2 = 60
+ * 3 = 40
+ * 4+ = 0
+ */
+function calculateAlcoholUnitsScore(alcoholUnits: number): number {
+  if (alcoholUnits === 0) {
+    return 100;
+  } else if (alcoholUnits === 1) {
+    return 80;
+  } else if (alcoholUnits === 2) {
+    return 60;
+  } else if (alcoholUnits === 3) {
+    return 40;
+  } else {
+    return Math.max(0, 40 - (alcoholUnits - 3) * 10);
+  }
+}
+
+/**
+ * Calculate 0-100 score for stress level (1-10 scale, lower is better)
+ * 1-2 = 100
+ * 3-4 = 80
+ * 5-6 = 50
+ * 7-8 = 20
+ * 9-10 = 0
+ */
+function calculateStressLevelScore(stressLevel: number): number {
+  if (stressLevel <= 2) {
+    return 100;
+  } else if (stressLevel <= 4) {
+    return 80;
+  } else if (stressLevel <= 6) {
+    return 50;
+  } else if (stressLevel <= 8) {
+    return 20;
+  } else {
+    return 0;
+  }
+}
+
+/**
+ * Calculate 0-100 score for late caffeine (boolean)
+ * false = 100, true = 0
+ */
+function calculateLateCaffeineScore(lateCaffeine: boolean): number {
+  return lateCaffeine ? 0 : 100;
+}
+
+/**
+ * Calculate 0-100 score for late screen (boolean)
+ * false = 100, true = 0
+ */
+function calculateScreenLateScore(screenLate: boolean): number {
+  return screenLate ? 0 : 100;
+}
+
+/**
+ * Calculate 0-100 score for bedtime hour
+ * 20-22 = 100 (optimal)
+ * 22-23 = 80
+ * 19-20 = 70
+ * 23-24 = 50
+ * <19 or >24 = 20
+ */
+function calculateBedtimeHourScore(bedtimeHour: number): number {
+  if (bedtimeHour >= 20 && bedtimeHour <= 22) {
+    return 100;
+  } else if (bedtimeHour > 22 && bedtimeHour <= 23) {
+    return 80;
+  } else if (bedtimeHour >= 19 && bedtimeHour < 20) {
+    return 70;
+  } else if (bedtimeHour > 23 && bedtimeHour <= 24) {
+    return 50;
+  } else {
+    return 20;
+  }
+}
+
+/**
+ * Calculate metric scores from daily entries
+ */
+function calculateMetricScores(entries: DailyEntryDocument[]): {
+  scores: MetricScores;
+  averages: MetricsScoresResponse['averages'];
+} {
+  if (entries.length === 0) {
+    return {
+      scores: {
+        sleepHours: 0,
+        steps: 0,
+        vigorousMinutes: 0,
+        processedFoodScore: 0,
+        alcoholUnits: 0,
+        stressLevel: 0,
+        lateCaffeine: 0,
+        screenLate: 0,
+        bedtimeHour: 0,
+      },
+      averages: {
+        sleepHours: 0,
+        steps: 0,
+        vigorousMinutes: 0,
+        processedFoodScore: 0,
+        alcoholUnits: 0,
+        stressLevel: 0,
+        lateCaffeine: 0,
+        screenLate: 0,
+        bedtimeHour: 0,
+      },
+    };
+  }
+
+  // Calculate averages
+  const sum = entries.reduce(
+    (acc, entry) => ({
+      sleepHours: acc.sleepHours + (entry.sleepHours || 0),
+      steps: acc.steps + (entry.steps || 0),
+      vigorousMinutes: acc.vigorousMinutes + (entry.vigorousMinutes || 0),
+      processedFoodScore: acc.processedFoodScore + (entry.processedFoodScore || 0),
+      alcoholUnits: acc.alcoholUnits + (entry.alcoholUnits || 0),
+      stressLevel: acc.stressLevel + (entry.stressLevel || 0),
+      lateCaffeine: acc.lateCaffeine + (entry.lateCaffeine ? 1 : 0),
+      screenLate: acc.screenLate + (entry.screenLate ? 1 : 0),
+      bedtimeHour: acc.bedtimeHour + (entry.bedtimeHour || 0),
+    }),
+    {
+      sleepHours: 0,
+      steps: 0,
+      vigorousMinutes: 0,
+      processedFoodScore: 0,
+      alcoholUnits: 0,
+      stressLevel: 0,
+      lateCaffeine: 0,
+      screenLate: 0,
+      bedtimeHour: 0,
+    }
+  );
+
+  const count = entries.length;
+  const averages = {
+    sleepHours: roundTo2Decimals(sum.sleepHours / count),
+    steps: roundTo2Decimals(sum.steps / count),
+    vigorousMinutes: roundTo2Decimals(sum.vigorousMinutes / count),
+    processedFoodScore: roundTo2Decimals(sum.processedFoodScore / count),
+    alcoholUnits: roundTo2Decimals(sum.alcoholUnits / count),
+    stressLevel: roundTo2Decimals(sum.stressLevel / count),
+    lateCaffeine: roundTo2Decimals(sum.lateCaffeine / count), // percentage
+    screenLate: roundTo2Decimals(sum.screenLate / count), // percentage
+    bedtimeHour: roundTo2Decimals(sum.bedtimeHour / count),
+  };
+
+  // Calculate scores based on averages
+  const scores: MetricScores = {
+    sleepHours: Math.round(calculateSleepHoursScore(averages.sleepHours)),
+    steps: Math.round(calculateStepsScore(averages.steps)),
+    vigorousMinutes: Math.round(calculateVigorousMinutesScore(averages.vigorousMinutes)),
+    processedFoodScore: Math.round(calculateProcessedFoodScore(averages.processedFoodScore)),
+    alcoholUnits: Math.round(calculateAlcoholUnitsScore(averages.alcoholUnits)),
+    stressLevel: Math.round(calculateStressLevelScore(averages.stressLevel)),
+    lateCaffeine: Math.round((1 - averages.lateCaffeine) * 100), // percentage of days without late caffeine
+    screenLate: Math.round((1 - averages.screenLate) * 100), // percentage of days without late screen
+    bedtimeHour: Math.round(calculateBedtimeHourScore(averages.bedtimeHour)),
+  };
+
+  return { scores, averages };
 }
 
 /**
@@ -2182,6 +2574,91 @@ app.get('/api/subscription/status', requireAuth, async (req: AuthenticatedReques
   } catch (error: any) {
     console.error('[subscription/status] error:', error);
     return res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+/**
+ * GET /api/metrics/scores
+ * Get 0-100 scores for each health metric based on user's daily check-in data
+ * Protected endpoint - requires authentication and subscription
+ * Response: MetricsScoresResponse with scores, averages, and data period
+ */
+app.get('/api/metrics/scores', requireAuth, requireSubscription, async (req: AuthenticatedRequest, res) => {
+  try {
+    const userId = req.user!.uid;
+    const user = await getUserDocument(userId);
+    
+    if (!user) {
+      return res.status(404).json({ error: 'User not found. Complete onboarding first.' });
+    }
+
+    // Get all daily entries
+    const allEntries = await listDailyEntries(userId);
+    
+    if (allEntries.length === 0) {
+      return res.json({
+        userId,
+        scores: {
+          sleepHours: 0,
+          steps: 0,
+          vigorousMinutes: 0,
+          processedFoodScore: 0,
+          alcoholUnits: 0,
+          stressLevel: 0,
+          lateCaffeine: 0,
+          screenLate: 0,
+          bedtimeHour: 0,
+        },
+        averages: {
+          sleepHours: 0,
+          steps: 0,
+          vigorousMinutes: 0,
+          processedFoodScore: 0,
+          alcoholUnits: 0,
+          stressLevel: 0,
+          lateCaffeine: 0,
+          screenLate: 0,
+          bedtimeHour: 0,
+        },
+        dataPoints: 0,
+        period: {
+          start: '',
+          end: '',
+        },
+      } as MetricsScoresResponse);
+    }
+
+    // Calculate scores from all entries
+    const { scores, averages } = calculateMetricScores(allEntries);
+
+    // Get date range
+    const sortedEntries = allEntries.sort((a, b) => {
+      const dateA = a.dateKey || a.date;
+      const dateB = b.dateKey || b.date;
+      return dateA.localeCompare(dateB);
+    });
+
+    const start = sortedEntries[0].dateKey || sortedEntries[0].date;
+    const end = sortedEntries[sortedEntries.length - 1].dateKey || sortedEntries[sortedEntries.length - 1].date;
+
+    const response: MetricsScoresResponse = {
+      userId,
+      scores,
+      averages,
+      dataPoints: allEntries.length,
+      period: {
+        start,
+        end,
+      },
+    };
+
+    return res.json(response);
+  } catch (error: any) {
+    console.error('[metrics/scores] error:', error);
+    return res.status(500).json({
+      error: 'Internal server error',
+      debug: process.env.NODE_ENV === 'development' ? String(error?.message ?? error) : undefined,
+    });
   }
 });
 

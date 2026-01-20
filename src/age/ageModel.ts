@@ -32,9 +32,7 @@ export interface BiologicalAgeState {
   agingDebtYears: number; // currentBiological - chronological
   history: DailyAgeEntry[]; // recent days
   rejuvenationStreakDays: number; // consecutive days with negative deltaYears
-  accelerationStreakDays: number; // consecutive days with positive deltaYears
   totalRejuvenationDays: number; // how many days had negative deltaYears
-  totalAccelerationDays: number; // how many days had positive deltaYears
 }
 
 /**
@@ -138,18 +136,14 @@ export function applyDailyAgeUpdate(
 
   const threshold = 0.001;
   let rejuvenationStreakDays = prev.rejuvenationStreakDays;
-  let accelerationStreakDays = prev.accelerationStreakDays;
   let totalRejuvenationDays = prev.totalRejuvenationDays;
-  let totalAccelerationDays = prev.totalAccelerationDays;
 
   if (deltaYears <= -threshold) {
     rejuvenationStreakDays += 1;
-    accelerationStreakDays = 0;
     totalRejuvenationDays += 1;
-  } else if (deltaYears >= threshold) {
-    accelerationStreakDays += 1;
+  } else {
+    // Acceleration or neutral: reset streak
     rejuvenationStreakDays = 0;
-    totalAccelerationDays += 1;
   }
 
   const entry: DailyAgeEntry = {
@@ -166,9 +160,7 @@ export function applyDailyAgeUpdate(
     agingDebtYears,
     history,
     rejuvenationStreakDays,
-    accelerationStreakDays,
     totalRejuvenationDays,
-    totalAccelerationDays,
   };
 
   return { next, entry };
@@ -184,8 +176,6 @@ export function createInitialBiologicalAgeState(
     agingDebtYears: 0,
     history: [],
     rejuvenationStreakDays: 0,
-    accelerationStreakDays: 0,
     totalRejuvenationDays: 0,
-    totalAccelerationDays: 0,
   };
 }

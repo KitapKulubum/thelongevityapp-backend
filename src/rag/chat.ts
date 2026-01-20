@@ -53,9 +53,7 @@ Current biological age: ${userDoc.currentBiologicalAgeYears.toFixed(2)} years
 Baseline biological age: ${userDoc.baselineBiologicalAgeYears.toFixed(2)} years
 Aging debt: ${userDoc.currentAgingDebtYears.toFixed(2)} years (${userDoc.currentAgingDebtYears > 0 ? 'aging faster' : userDoc.currentAgingDebtYears < 0 ? 'aging slower' : 'normal aging'})
 Rejuvenation streak: ${userDoc.rejuvenationStreakDays} days
-Acceleration streak: ${userDoc.accelerationStreakDays} days
 Total rejuvenation days: ${userDoc.totalRejuvenationDays}
-Total acceleration days: ${userDoc.totalAccelerationDays}
 `.trim();
     }
 

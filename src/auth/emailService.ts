@@ -63,7 +63,7 @@ export async function sendPasswordResetOTP(email: string, code: string): Promise
     return;
   }
 
-  const fromEmail = process.env.SMTP_FROM || process.env.SMTP_USER || 'noreply@thelongevityapp.com';
+  const fromEmail = process.env.SMTP_FROM || process.env.SMTP_USER || 'gizemdemir.zx@gmail.com';
 
   const mailOptions = {
     from: `Longevity AI <${fromEmail}>`,
@@ -86,6 +86,54 @@ export async function sendPasswordResetOTP(email: string, code: string): Promise
   try {
     await transporter.sendMail(mailOptions);
     console.log(`[emailService] Password reset OTP sent to ${email}`);
+  } catch (error: any) {
+    console.error('[emailService] Failed to send email:', error);
+    throw new Error('Failed to send verification email');
+  }
+}
+
+/**
+ * Sends an email verification link to the user's email.
+ * In development mode without SMTP configured, logs the link to console instead.
+ */
+export async function sendVerificationEmail(email: string, verificationLink: string): Promise<void> {
+  const transporter = getTransporter();
+
+  // If SMTP is not configured, log to console for development
+  if (!transporter || !isSMTPConfigured()) {
+    console.log('\n========================================');
+    console.log('[emailService] SMTP not configured - Email verification link (for development):');
+    console.log(`Email: ${email}`);
+    console.log(`Verification Link: ${verificationLink}`);
+    console.log('========================================\n');
+    return;
+  }
+
+  const fromEmail = process.env.SMTP_FROM || process.env.SMTP_USER || 'gizemdemir.zx@gmail.com';
+
+  const mailOptions = {
+    from: `Longevity AI <${fromEmail}>`,
+    to: email,
+    subject: 'Verify your email address',
+    text: `Please verify your email address by clicking the following link:\n\n${verificationLink}\n\nThis link will expire in 1 hour.`,
+    html: `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+        <h2 style="color: #333;">Verify Your Email Address</h2>
+        <p>Thank you for signing up for Longevity AI! Please verify your email address by clicking the button below:</p>
+        <div style="text-align: center; margin: 30px 0;">
+          <a href="${verificationLink}" style="background-color: #007AFF; color: white; padding: 12px 24px; text-decoration: none; border-radius: 6px; display: inline-block; font-weight: bold;">Verify Email Address</a>
+        </div>
+        <p style="color: #666; font-size: 14px;">Or copy and paste this link into your browser:</p>
+        <p style="color: #666; font-size: 12px; word-break: break-all;">${verificationLink}</p>
+        <p style="color: #666; font-size: 12px; margin-top: 30px;">This link will expire in 1 hour.</p>
+        <p style="color: #666; font-size: 12px; margin-top: 20px;">If you didn't create an account, please ignore this email.</p>
+      </div>
+    `,
+  };
+
+  try {
+    await transporter.sendMail(mailOptions);
+    console.log(`[emailService] Email verification link sent to ${email}`);
   } catch (error: any) {
     console.error('[emailService] Failed to send email:', error);
     throw new Error('Failed to send verification email');

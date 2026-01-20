@@ -17,9 +17,7 @@ interface UserState {
   currentBiologicalAgeYears: number;
   agingDebtYears: number;
   rejuvenationStreakDays: number;
-  accelerationStreakDays: number;
   totalRejuvenationDays: number;
-  totalAccelerationDays: number;
   updatedAt: string;
 }
 
@@ -96,9 +94,7 @@ export function getOrCreateBiologicalAgeState(
       agingDebtYears: state.agingDebtYears,
       history: [],
       rejuvenationStreakDays: state.rejuvenationStreakDays,
-      accelerationStreakDays: state.accelerationStreakDays,
       totalRejuvenationDays: state.totalRejuvenationDays,
-      totalAccelerationDays: state.totalAccelerationDays,
     };
   }
 
@@ -108,9 +104,7 @@ export function getOrCreateBiologicalAgeState(
     currentBiologicalAgeYears: initialState.currentBiologicalAgeYears,
     agingDebtYears: initialState.agingDebtYears,
     rejuvenationStreakDays: initialState.rejuvenationStreakDays,
-    accelerationStreakDays: initialState.accelerationStreakDays,
     totalRejuvenationDays: initialState.totalRejuvenationDays,
-    totalAccelerationDays: initialState.totalAccelerationDays,
     updatedAt: new Date().toISOString(),
   });
 
@@ -145,9 +139,7 @@ export function applyDailyMetricsForUser(
         agingDebtYears: currentState.agingDebtYears,
         history: [],
         rejuvenationStreakDays: currentState.rejuvenationStreakDays,
-        accelerationStreakDays: currentState.accelerationStreakDays,
         totalRejuvenationDays: currentState.totalRejuvenationDays,
-        totalAccelerationDays: currentState.totalAccelerationDays,
       }
     : createInitialBiologicalAgeState(profile.chronologicalAgeYears);
 
@@ -159,9 +151,7 @@ export function applyDailyMetricsForUser(
     currentBiologicalAgeYears: next.currentBiologicalAgeYears,
     agingDebtYears: next.agingDebtYears,
     rejuvenationStreakDays: next.rejuvenationStreakDays,
-    accelerationStreakDays: next.accelerationStreakDays,
     totalRejuvenationDays: next.totalRejuvenationDays,
-    totalAccelerationDays: next.totalAccelerationDays,
     updatedAt: new Date().toISOString(),
   });
 
@@ -210,9 +200,7 @@ export function getBiologicalAgeState(
     agingDebtYears: state.agingDebtYears,
     history: [],
     rejuvenationStreakDays: state.rejuvenationStreakDays,
-    accelerationStreakDays: state.accelerationStreakDays,
     totalRejuvenationDays: state.totalRejuvenationDays,
-    totalAccelerationDays: state.totalAccelerationDays,
   };
 }
 

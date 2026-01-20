@@ -79,9 +79,7 @@ export async function upsertUserOnboarding(params: {
       currentBiologicalAgeYears,
       currentAgingDebtYears,
       rejuvenationStreakDays: 0,
-      accelerationStreakDays: 0,
       totalRejuvenationDays: 0,
-      totalAccelerationDays: 0,
       createdAt,
       updatedAt: serverTimestamp(),
     },
@@ -262,9 +260,7 @@ export async function updateUserAfterDaily(
     currentBiologicalAgeYears: number;
     currentAgingDebtYears: number;
     rejuvenationStreakDays: number;
-    accelerationStreakDays: number;
     totalRejuvenationDays: number;
-    totalAccelerationDays: number;
     lastCheckinDayKey?: string;
     lastCheckinAt?: string;
   }

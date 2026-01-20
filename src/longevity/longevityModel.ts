@@ -51,9 +51,7 @@ export interface UserDocument {
   currentBiologicalAgeYears: number;
   currentAgingDebtYears: number;
   rejuvenationStreakDays: number;
-  accelerationStreakDays: number;
   totalRejuvenationDays: number;
-  totalAccelerationDays: number;
   // Subscription fields
   subscriptionStatus?: 'active' | 'expired' | null;
   subscriptionPlan?: 'membership_monthly' | 'membership_yearly' | null;
@@ -98,7 +96,6 @@ export interface DailyEntryDocument {
   currentBiologicalAgeYears?: number;
   currentAgingDebtYears?: number;
   rejuvenationStreakDays?: number;
-  accelerationStreakDays?: number;
   createdAt: string;
 }
 
@@ -108,9 +105,7 @@ export interface BiologicalAgeState {
   currentBiologicalAgeYears: number;
   agingDebtYears: number;
   rejuvenationStreakDays: number;
-  accelerationStreakDays: number;
   totalRejuvenationDays: number;
-  totalAccelerationDays: number;
 }
 
 export interface TodayEntry {
@@ -234,4 +229,40 @@ export interface YearlyDeltaResponse {
 }
 
 export type DeltaAnalyticsResponse = WeeklyDeltaResponse | MonthlyDeltaResponse | YearlyDeltaResponse;
+
+/**
+ * Metric scores (0-100) for each health metric
+ */
+export interface MetricScores {
+  sleepHours: number; // 0-100
+  steps: number; // 0-100
+  vigorousMinutes: number; // 0-100
+  processedFoodScore: number; // 0-100 (inverted: lower processedFoodScore = higher score)
+  alcoholUnits: number; // 0-100 (0 units = 100, more units = lower score)
+  stressLevel: number; // 0-100 (low stress = high score)
+  lateCaffeine: number; // 0 or 100 (false = 100, true = 0)
+  screenLate: number; // 0 or 100 (false = 100, true = 0)
+  bedtimeHour: number; // 0-100 (optimal bedtime = 100)
+}
+
+export interface MetricsScoresResponse {
+  userId: string;
+  scores: MetricScores;
+  averages: {
+    sleepHours: number;
+    steps: number;
+    vigorousMinutes: number;
+    processedFoodScore: number;
+    alcoholUnits: number;
+    stressLevel: number;
+    lateCaffeine: number; // percentage of days with late caffeine (0-1)
+    screenLate: number; // percentage of days with late screen (0-1)
+    bedtimeHour: number;
+  };
+  dataPoints: number; // number of check-ins used for calculation
+  period: {
+    start: string; // YYYY-MM-DD
+    end: string; // YYYY-MM-DD
+  };
+}
 

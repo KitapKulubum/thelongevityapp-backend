@@ -42,7 +42,7 @@ We collect the following types of personal information:
 ### 2.2 Usage Data
 - Daily check-in data (sleep, steps, exercise, nutrition, stress levels)
 - Biological age metrics and calculations
-- Streak information (rejuvenation and acceleration streaks)
+- Streak information (rejuvenation streaks)
 - App usage patterns
 
 ### 2.3 Technical Data
@@ -93,7 +93,7 @@ You have the following rights regarding your personal data:
 - **Objection**: Object to certain processing activities
 - **Data Portability**: Request your data in a portable format
 
-To exercise these rights, please contact us at: privacy@thelongevityapp.com
+To exercise these rights, please contact us at: privacy@thelongevityapp.ai
 
 ## 7. Data Security
 
@@ -117,7 +117,7 @@ We may update this Privacy Policy from time to time. We will notify you of signi
 
 If you have questions about this Privacy Policy or wish to exercise your rights, please contact us at:
 
-**Email**: privacy@thelongevityapp.com
+**Email**: privacy@thelongevityapp.ai
 
 ---
 
@@ -128,7 +128,7 @@ If you have questions about this Privacy Policy or wish to exercise your rights,
 ## 1. Veri Sorumlusu
 
 **The Longevity App**  
-E-posta: privacy@thelongevityapp.com
+E-posta: privacy@thelongevityapp.ai
 
 ## 2. İşlenen Kişisel Veriler
 
@@ -182,7 +182,7 @@ KVKK'nın 11. maddesi uyarınca aşağıdaki haklara sahipsiniz:
 
 Haklarınızı kullanmak için aşağıdaki yöntemlerle başvurabilirsiniz:
 
-**E-posta**: privacy@thelongevityapp.com
+**E-posta**: privacy@thelongevityapp.ai
 
 Başvurunuzda kimliğinizi tespit edici bilgiler ve talep ettiğiniz hak kapsamındaki açıklamalarınızı içeren yazılı başvurunuzu iletebilirsiniz.
 
@@ -327,7 +327,7 @@ If any provision of these Terms is found to be unenforceable, the remaining prov
 
 For questions about these Terms, please contact us at:
 
-**Email**: legal@thelongevityapp.com
+**Email**: legal@thelongevityapp.ai
 
 ## 15. Entire Agreement
 

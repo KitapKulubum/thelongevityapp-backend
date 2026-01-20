@@ -12,9 +12,7 @@ export interface UserProfile {
   currentBiologicalAgeYears: number | null;
   currentAgingDebtYears: number;
   rejuvenationStreakDays: number;
-  accelerationStreakDays: number;
   totalRejuvenationDays: number;
-  totalAccelerationDays: number;
   createdAt: string;
   updatedAt: string;
 }
@@ -95,9 +93,7 @@ export async function getOrCreateUserProfile(
       currentBiologicalAgeYears: null,
       currentAgingDebtYears: 0,
       rejuvenationStreakDays: 0,
-      accelerationStreakDays: 0,
       totalRejuvenationDays: 0,
-      totalAccelerationDays: 0,
       createdAt: now,
       updatedAt: now,
     };
